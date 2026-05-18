@@ -9,6 +9,7 @@ const QWEN_SEAT = parseInt(process.env.QWEN_SEAT || '0');
 
 let gameCount = 0;
 let results = [];
+let startTime;
 
 function printResult(paipu) {
     const defen = paipu.defen;
@@ -37,6 +38,8 @@ function printSummary() {
     const rankDist = [0, 0, 0, 0];
     for (const r of results) rankDist[r.qwen_rank - 1]++;
     console.log(`  順位分布: 1位:${rankDist[0]} 2位:${rankDist[1]} 3位:${rankDist[2]} 4位:${rankDist[3]}`);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+    console.log(`  所要時間: ${elapsed}秒`);
 }
 
 function startGame() {
@@ -67,6 +70,7 @@ function startGame() {
     game.kaiju();
 }
 
+startTime = Date.now();
 console.log(`Qwen麻雀対局: ${NUM_GAMES}局, Qwenは席${QWEN_SEAT}`);
 console.log(`モデル: ${process.env.QWEN_MODEL || 'qwen3:14b'}`);
 startGame();
