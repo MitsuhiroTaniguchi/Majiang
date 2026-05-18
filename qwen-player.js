@@ -7,33 +7,20 @@ const MODEL = process.env.QWEN_MODEL || 'qwen3:14b';
 const NUM_CTX = parseInt(process.env.QWEN_NUM_CTX || '2048');
 
 const WIND = ['東', '南', '西', '北'];
-const SUIT = { m: '萬', p: '筒', s: '索', z: '' };
-const ZNAME = { 1: '東', 2: '南', 3: '西', 4: '北', 5: '白', 6: '發', 7: '中' };
 
-function paiName(p) {
-    const s = p[0], n = p[1];
-    if (s === 'z') return ZNAME[n] || p;
-    if (n === '0') return `赤5${SUIT[s]}`;
-    return `${n}${SUIT[s]}`;
-}
-
-function shoupaiStr(shoupai) {
-    return shoupai.toString();
-}
-
-function heStr(he) {
-    if (!he || !he._pai || he._pai.length === 0) return 'なし';
-    return he._pai.map(p => p.slice(0, 2)).join(',');
-}
+const SYSTEM_MSG = `あなたは日本式リーチ麻雀のAIです。牌記法: m=萬子,p=筒子,s=索子,z=字牌(1東2南3西4北5白6發7中),0=赤5。手牌例: m123p456s789z11 副露例: m12-3(チー),z555=(ポン)。合法手から最善の1つを選び、その記号だけ回答せよ。`;
 
 async function queryOllama(prompt) {
     const body = JSON.stringify({
         model: MODEL,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [
+            { role: 'system', content: SYSTEM_MSG },
+            { role: 'user', content: prompt },
+        ],
         stream: false,
         think: false,
         options: {
-            num_predict: 15,
+            num_predict: 12,
             temperature: 0.3,
             num_ctx: NUM_CTX,
             repeat_penalty: 1.0,
@@ -50,20 +37,63 @@ async function queryOllama(prompt) {
     return (data.message?.content || '').trim();
 }
 
-function buildDapaiPrompt(player, gangzimo) {
+function visibleInfo(player) {
     const model = player._model;
     const mf = player._menfeng;
-    const zf = model.zhuangfeng;
+    const parts = [];
+    parts.push(`${WIND[model.zhuangfeng]}${model.jushu + 1}局${model.changbang}本場`);
+    parts.push(`自風${WIND[mf]}`);
+    parts.push(`残${player.shan.paishu}枚`);
+    parts.push(`ドラ${model.shan.baopai.join(',')}`);
 
-    let lines = [];
-    lines.push(`場風:${WIND[zf]} 自風:${WIND[mf]} 残り:${player.shan.paishu}枚`);
-    lines.push(`ドラ表示:${model.shan.baopai.join(',')}`);
-    lines.push(`手牌:${shoupaiStr(player.shoupai)}`);
+    const scores = [];
+    for (let i = 0; i < 4; i++) {
+        const rel = (i - mf + 4) % 4;
+        const tag = ['自', '下', '対', '上'][rel];
+        const id = model.player_id[i];
+        scores.push(`${tag}${model.defen[id]}`);
+    }
+    parts.push(scores.join('/'));
+    return parts.join(' ');
+}
 
+function discardInfo(player) {
+    const model = player._model;
+    const mf = player._menfeng;
+    const parts = [];
+    for (let i = 0; i < 4; i++) {
+        const rel = (i - mf + 4) % 4;
+        if (rel === 0) continue;
+        const tag = ['', '下', '対', '上'][rel];
+        const he = model.he[i];
+        if (he && he._pai && he._pai.length > 0) {
+            parts.push(`${tag}捨:${he._pai.map(p => p.slice(0, 2)).join('')}`);
+        }
+    }
+    return parts.join(' ');
+}
+
+function buildDapaiPrompt(player) {
     const dapai = player.get_dapai(player.shoupai);
-    lines.push(`合法打牌:[${dapai.join(',')}]`);
-    lines.push(`打牌を1つ選べ。記号のみ回答。例: m3`);
-    return { prompt: lines.join('\n'), legal: dapai };
+
+    let lizhi_candidates = [];
+    for (const p of dapai) {
+        if (player.allow_lizhi(player.shoupai, p)) {
+            lizhi_candidates.push(p + '*');
+        }
+    }
+
+    const allOptions = [...dapai, ...lizhi_candidates];
+
+    const lines = [];
+    lines.push(visibleInfo(player));
+    lines.push(`手牌:${player.shoupai.toString()}`);
+    lines.push(discardInfo(player));
+    if (lizhi_candidates.length > 0) {
+        lines.push(`(*付=リーチ宣言)`);
+    }
+    lines.push(`選択:[${allOptions.join(',')}]`);
+    return { prompt: lines.join('\n'), legal: allOptions };
 }
 
 function buildFulouPrompt(player, dapaiMsg) {
@@ -78,14 +108,13 @@ function buildFulouPrompt(player, dapaiMsg) {
     for (const m of player.get_gang_mianzi(player.shoupai, p)) options.push(m);
 
     if (options.length === 0) return null;
-
     options.push('skip');
 
-    let lines = [];
-    lines.push(`手牌:${shoupaiStr(player.shoupai)}`);
-    lines.push(`他家打牌:${dapaiMsg.p}`);
-    lines.push(`選択肢:[${options.join(',')}]`);
-    lines.push(`鳴くかスキップか。記号のみ回答。`);
+    const lines = [];
+    lines.push(visibleInfo(player));
+    lines.push(`手牌:${player.shoupai.toString()}`);
+    lines.push(`他家打:${dapaiMsg.p}`);
+    lines.push(`選択:[${options.join(',')}] skipはスルー`);
     return { prompt: lines.join('\n'), legal: options };
 }
 
@@ -93,21 +122,27 @@ function buildGangPrompt(player) {
     const gangOptions = player.get_gang_mianzi(player.shoupai);
     if (gangOptions.length === 0) return null;
 
-    let options = [...gangOptions, 'skip'];
-    let lines = [];
-    lines.push(`手牌:${shoupaiStr(player.shoupai)}`);
-    lines.push(`カン選択肢:[${options.join(',')}]`);
-    lines.push(`カンするかスキップか。記号のみ回答。`);
+    const options = [...gangOptions, 'skip'];
+    const lines = [];
+    lines.push(`手牌:${player.shoupai.toString()}`);
+    lines.push(`カン選択:[${options.join(',')}]`);
     return { prompt: lines.join('\n'), legal: options };
 }
 
 function parseResponse(response, legal) {
-    const cleaned = response.replace(/[`\s「」]/g, '');
+    const cleaned = response.replace(/[\s`「」　]/g, '');
+
+    for (const opt of legal) {
+        if (cleaned === opt) return opt;
+    }
     for (const opt of legal) {
         if (cleaned.includes(opt)) return opt;
     }
+    if (cleaned.includes('skip') || cleaned.includes('スキップ') || cleaned.includes('スルー')) {
+        if (legal.includes('skip')) return 'skip';
+    }
     for (const opt of legal) {
-        if (cleaned.includes(opt.slice(0, 2))) return opt;
+        if (opt !== 'skip' && cleaned.includes(opt.slice(0, 2))) return opt;
     }
     return legal[0];
 }
@@ -116,7 +151,6 @@ class QwenPlayer extends Majiang.Player {
 
     constructor() {
         super();
-        this._pending = null;
     }
 
     action_kaiju(kaiju) { this._callback(); }
@@ -136,12 +170,34 @@ class QwenPlayer extends Majiang.Player {
             return this._callback({ daopai: '-' });
         }
 
-        const gangInfo = buildGangPrompt(this);
-        if (gangInfo && gangInfo.legal.length === 2) {
-            // Only one gang option + skip — ask LLM
+        if (this.shoupai.lizhi) {
+            const gang = this.get_gang_mianzi(this.shoupai);
+            if (gang.length > 0) {
+                return this._callback({ gang: gang[0] });
+            }
+            return this._callback({ dapai: this.shoupai._zimo });
         }
 
-        const { prompt, legal } = buildDapaiPrompt(this, gangzimo);
+        const gangInfo = buildGangPrompt(this);
+        const { prompt, legal } = buildDapaiPrompt(this);
+
+        if (gangInfo) {
+            const allLegal = [...gangInfo.legal.filter(o => o !== 'skip'), ...legal];
+            const combinedPrompt = `${prompt}\nカンも可:[${gangInfo.legal.join(',')}]`;
+            this._asyncAction(combinedPrompt, allLegal, (chosen) => {
+                if (chosen === 'skip') {
+                    return this._callback({ dapai: legal[0] });
+                }
+                if (gangInfo.legal.includes(chosen) && chosen !== 'skip') {
+                    console.log(`  [Qwen] カン:${chosen}`);
+                    return this._callback({ gang: chosen });
+                }
+                console.log(`  [Qwen] 打${chosen}`);
+                this._callback({ dapai: chosen });
+            });
+            return;
+        }
+
         this._asyncAction(prompt, legal, (chosen) => {
             console.log(`  [Qwen] 打${chosen}`);
             this._callback({ dapai: chosen });
@@ -211,7 +267,7 @@ class QwenPlayer extends Majiang.Player {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {
-            console.error(`  [Qwen] LLM error: ${err.message}, falling back to first legal`);
+            console.error(`  [Qwen] LLM error: ${err.message}, fallback`);
             onResult(legal[0]);
         });
     }
