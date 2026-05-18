@@ -6,7 +6,17 @@ const LLAMA_URL = process.env.LLAMA_URL || 'http://localhost:8080';
 
 const WIND = ['東', '南', '西', '北'];
 
-const SYSTEM_MSG = `あなたは日本式リーチ麻雀のAIです。牌記法: m=萬子,p=筒子,s=索子,z=字牌(1東2南3西4北5白6發7中),0=赤5。手牌例: m123p456s789z11 副露例: m12-3(チー),z555=(ポン)。合法手から最善の1つを選び、その記号だけ回答せよ。`;
+const SYSTEM_MSG =
+`あなたは日本式リーチ麻雀のAIプレイヤーです。
+
+牌の表記:
+  m = 萬子 (1-9)
+  p = 筒子 (1-9)
+  s = 索子 (1-9)
+  z = 字牌 (1=東 2=南 3=西 4=北 5=白 6=發 7=中)
+  0 = 赤5 (例: m0 = 赤萬子5)
+
+回答は合法手リストから最善の1つを選び、その記号だけ答えてください。`;
 
 async function queryLLM(prompt) {
     const body = JSON.stringify({
@@ -28,24 +38,66 @@ async function queryLLM(prompt) {
     return (data.choices?.[0]?.message?.content || '').trim();
 }
 
+function expandPai(compact) {
+    const tiles = [];
+    let s = '';
+    for (const ch of compact) {
+        if ('mpsz'.includes(ch)) {
+            s = ch;
+        } else if ('0123456789'.includes(ch)) {
+            tiles.push(s + ch);
+        }
+    }
+    return tiles;
+}
+
+function formatShoupai(shoupaiStr) {
+    const parts = shoupaiStr.split(',');
+    const hand = expandPai(parts[0]).join(' ');
+    if (parts.length <= 1) return hand;
+
+    const melds = [];
+    for (let i = 1; i < parts.length; i++) {
+        const tiles = expandPai(parts[i]);
+        melds.push(tiles.join(' '));
+    }
+    return hand + ' | ' + melds.join(', ');
+}
+
+function formatOption(opt) {
+    if (opt === 'skip' || opt === 'kita') return opt;
+    if (opt.match(/^[mpsz]\d\*$/)) return opt.slice(0, 2) + ' *';
+    if (opt.match(/^[mpsz]\d$/)) return opt;
+    const tiles = expandPai(opt);
+    return tiles.join(' ');
+}
+
+function stripDir(opt) {
+    return opt.replace(/[\+\=\-]/g, '');
+}
+
+function formatHe(paiArr) {
+    return paiArr.map(p => p.slice(0, 2)).join(' ');
+}
+
 function visibleInfo(player) {
     const model = player._model;
     const mf = player._menfeng;
-    const parts = [];
-    parts.push(`${WIND[model.zhuangfeng]}${model.jushu + 1}局${model.changbang}本場`);
-    parts.push(`自風${WIND[mf]}`);
-    parts.push(`残${player.shan.paishu}枚`);
-    parts.push(`ドラ${model.shan.baopai.join(',')}`);
+    const lines = [];
+    lines.push(`${WIND[model.zhuangfeng]} ${model.jushu + 1}局 ${model.changbang}本場`);
+    lines.push(`自風: ${WIND[mf]}`);
+    lines.push(`残: ${player.shan.paishu}枚`);
+    lines.push(`ドラ: ${model.shan.baopai.map(p => p || '').join(' ')}`);
 
     const scores = [];
     for (let i = 0; i < 4; i++) {
         const rel = (i - mf + 4) % 4;
         const tag = ['自', '下', '対', '上'][rel];
         const id = model.player_id[i];
-        scores.push(`${tag}${model.defen[id]}`);
+        scores.push(`${tag} ${model.defen[id]}`);
     }
-    parts.push(scores.join('/'));
-    return parts.join(' ');
+    lines.push(`点数: ${scores.join(' / ')}`);
+    return lines.join('\n');
 }
 
 function discardInfo(player) {
@@ -55,13 +107,13 @@ function discardInfo(player) {
     for (let i = 0; i < 4; i++) {
         const rel = (i - mf + 4) % 4;
         if (rel === 0) continue;
-        const tag = ['', '下', '対', '上'][rel];
+        const tag = ['', '下家', '対面', '上家'][rel];
         const he = model.he[i];
         if (he && he._pai && he._pai.length > 0) {
-            parts.push(`${tag}捨:${he._pai.map(p => p.slice(0, 2)).join('')}`);
+            parts.push(`${tag}捨牌: ${formatHe(he._pai)}`);
         }
     }
-    return parts.join(' ');
+    return parts.join('\n');
 }
 
 function buildDapaiPrompt(player) {
@@ -82,17 +134,18 @@ function buildDapaiPrompt(player) {
 
     const lines = [];
     lines.push(visibleInfo(player));
-    lines.push(`手牌:${player.shoupai.toString()}`);
+    lines.push(`手牌: ${formatShoupai(player.shoupai.toString())}`);
     if (xiangting === 0 && tingpai.length > 0) {
-        lines.push(`テンパイ! 待ち:[${tingpai.join(',')}]`);
+        lines.push(`テンパイ! 待ち: ${tingpai.join(' ')}`);
     } else if (xiangting > 0) {
-        lines.push(`向聴数:${xiangting}`);
+        lines.push(`向聴数: ${xiangting}`);
     }
-    lines.push(discardInfo(player));
+    const dinfo = discardInfo(player);
+    if (dinfo) lines.push(dinfo);
     if (lizhi_candidates.length > 0) {
-        lines.push(`(*付=リーチ宣言。テンパイならリーチ推奨)`);
+        lines.push(`(* 付きはリーチ宣言。テンパイならリーチ推奨)`);
     }
-    lines.push(`選択:[${allOptions.join(',')}]`);
+    lines.push(`選択: [${allOptions.map(formatOption).join(', ')}]`);
     return { prompt: lines.join('\n'), legal: allOptions };
 }
 
@@ -112,9 +165,9 @@ function buildFulouPrompt(player, dapaiMsg) {
 
     const lines = [];
     lines.push(visibleInfo(player));
-    lines.push(`手牌:${player.shoupai.toString()}`);
-    lines.push(`他家打:${dapaiMsg.p}`);
-    lines.push(`選択:[${options.join(',')}] skipはスルー`);
+    lines.push(`手牌: ${formatShoupai(player.shoupai.toString())}`);
+    lines.push(`他家打牌: ${dapaiMsg.p.slice(0, 2)}`);
+    lines.push(`選択: [${options.map(formatOption).join(', ')}] skip = スルー`);
     return { prompt: lines.join('\n'), legal: options };
 }
 
@@ -124,26 +177,38 @@ function buildGangPrompt(player) {
 
     const options = [...gangOptions, 'skip'];
     const lines = [];
-    lines.push(`手牌:${player.shoupai.toString()}`);
-    lines.push(`カン選択:[${options.join(',')}]`);
+    lines.push(`手牌: ${formatShoupai(player.shoupai.toString())}`);
+    lines.push(`カン選択: [${options.map(formatOption).join(', ')}]`);
     return { prompt: lines.join('\n'), legal: options };
 }
 
 function parseResponse(response, legal) {
-    const cleaned = response.replace(/[\s`「」　]/g, '');
+    const cleaned = response.replace(/[\s`「」　*\+\=\-]/g, '');
 
     for (const opt of legal) {
-        if (cleaned === opt) return opt;
+        const optClean = stripDir(opt).replace(/[\s*]/g, '');
+        if (cleaned === optClean) return opt;
     }
     for (const opt of legal) {
-        if (cleaned.includes(opt)) return opt;
+        const optClean = stripDir(opt).replace(/[\s*]/g, '');
+        if (cleaned.includes(optClean)) return opt;
     }
-    if (cleaned.includes('skip') || cleaned.includes('スキップ') || cleaned.includes('スルー')) {
+    if (/skip|スキップ|スルー/.test(cleaned)) {
         if (legal.includes('skip')) return 'skip';
     }
+
     for (const opt of legal) {
-        if (opt !== 'skip' && cleaned.includes(opt.slice(0, 2))) return opt;
+        if (opt === 'skip') continue;
+        const base = stripDir(opt).replace(/[*\s]/g, '').slice(0, 2);
+        if (cleaned.includes(base)) return opt;
     }
+
+    if (legal.find(o => o.endsWith('*'))) {
+        if (/リーチ|立直|reach/i.test(response)) {
+            return legal.find(o => o.endsWith('*')) || legal[0];
+        }
+    }
+
     return legal[0];
 }
 
@@ -183,7 +248,7 @@ class QwenPlayer extends Majiang.Player {
 
         if (gangInfo) {
             const allLegal = [...gangInfo.legal.filter(o => o !== 'skip'), ...legal];
-            const combinedPrompt = `${prompt}\nカンも可:[${gangInfo.legal.join(',')}]`;
+            const combinedPrompt = `${prompt}\nカンも可: [${gangInfo.legal.map(formatOption).join(', ')}]`;
             this._asyncAction(combinedPrompt, allLegal, (chosen) => {
                 if (chosen === 'skip') {
                     return this._callback({ dapai: legal[0] });
