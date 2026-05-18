@@ -228,6 +228,9 @@ class QwenPlayer extends Majiang.Player {
             return this._callback({ hule: '-' });
         }
 
+        const xiangting = Majiang.Util.xiangting(this.shoupai);
+        if (xiangting > 2) return this._callback();
+
         const fulouInfo = buildFulouPrompt(this, dapai);
         if (!fulouInfo) return this._callback();
 
