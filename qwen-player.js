@@ -2,39 +2,30 @@
 
 const Majiang = require('@kobalab/majiang-core');
 
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const MODEL = process.env.QWEN_MODEL || 'qwen3:14b';
-const NUM_CTX = parseInt(process.env.QWEN_NUM_CTX || '2048');
+const LLAMA_URL = process.env.LLAMA_URL || 'http://localhost:8080';
 
 const WIND = ['東', '南', '西', '北'];
 
 const SYSTEM_MSG = `あなたは日本式リーチ麻雀のAIです。牌記法: m=萬子,p=筒子,s=索子,z=字牌(1東2南3西4北5白6發7中),0=赤5。手牌例: m123p456s789z11 副露例: m12-3(チー),z555=(ポン)。合法手から最善の1つを選び、その記号だけ回答せよ。`;
 
-async function queryOllama(prompt) {
+async function queryLLM(prompt) {
     const body = JSON.stringify({
-        model: MODEL,
         messages: [
             { role: 'system', content: SYSTEM_MSG },
             { role: 'user', content: prompt },
         ],
-        stream: false,
-        think: false,
-        options: {
-            num_predict: 12,
-            temperature: 0.3,
-            num_ctx: NUM_CTX,
-            repeat_penalty: 1.0,
-        },
-        keep_alive: '30m',
+        max_tokens: 12,
+        temperature: 0.3,
+        repeat_penalty: 1.0,
     });
 
-    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+    const res = await fetch(`${LLAMA_URL}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
     });
     const data = await res.json();
-    return (data.message?.content || '').trim();
+    return (data.choices?.[0]?.message?.content || '').trim();
 }
 
 function visibleInfo(player) {
@@ -275,7 +266,7 @@ class QwenPlayer extends Majiang.Player {
     action_jieju(jieju) { this._callback(); }
 
     _asyncAction(prompt, legal, onResult) {
-        queryOllama(prompt).then(response => {
+        queryLLM(prompt).then(response => {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {

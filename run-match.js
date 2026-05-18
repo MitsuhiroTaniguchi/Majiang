@@ -72,5 +72,5 @@ function startGame() {
 
 startTime = Date.now();
 console.log(`Qwen麻雀対局: ${NUM_GAMES}局, Qwenは席${QWEN_SEAT}`);
-console.log(`モデル: ${process.env.QWEN_MODEL || 'qwen3:14b'}`);
+console.log(`モデル: Qwen3.6-27B-UD-IQ2_XXS (llama.cpp)`);
 startGame();
