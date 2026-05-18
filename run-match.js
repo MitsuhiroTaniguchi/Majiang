@@ -22,7 +22,7 @@ function printResult(paipu) {
     results.push({
         qwen_defen: defen[QWEN_SEAT],
         qwen_rank: rank[QWEN_SEAT],
-        qwen_point: point[QWEN_SEAT],
+        qwen_point: parseFloat(point[QWEN_SEAT]),
     });
 }
 
