@@ -89,6 +89,32 @@ class SanmaPlayer extends Majiang.Player {
     constructor() {
         super();
         this._model = new SanmaBoard();
+        this._n_kita = 0;
+    }
+
+    action(msg, callback) {
+        this._callback = callback;
+
+        if      (msg.kaiju)    this.kaiju  (msg.kaiju);
+        else if (msg.qipai)    { this._n_kita = 0; this.qipai(msg.qipai); }
+        else if (msg.zimo)     this.zimo   (msg.zimo);
+        else if (msg.dapai)    this.dapai  (msg.dapai);
+        else if (msg.fulou)    this.fulou  (msg.fulou);
+        else if (msg.gang)     this.gang   (msg.gang);
+        else if (msg.kita)     this.action_kita(msg.kita);
+        else if (msg.gangzimo) this.zimo   (msg.gangzimo, true);
+        else if (msg.kaigang)  this.kaigang(msg.kaigang);
+        else if (msg.hule)     this.hule   (msg.hule);
+        else if (msg.pingju)   this.pingju (msg.pingju);
+        else if (msg.jieju)    this.jieju  (msg.jieju);
+    }
+
+    allow_hule(shoupai, p, hupai) {
+        try {
+            return super.allow_hule(shoupai, p, hupai);
+        } catch(e) {
+            return false;
+        }
     }
 }
 
@@ -116,6 +142,10 @@ class SimpleAI extends SanmaPlayer {
             const gang = this.get_gang_mianzi(this.shoupai);
             if (gang.length > 0) return this._callback({ gang: gang[0] });
             return this._callback({ dapai: this.shoupai._zimo });
+        }
+
+        if (this._canKita()) {
+            return this._callback({ kita: '-' });
         }
 
         const dapai = this.get_dapai(this.shoupai);
@@ -184,9 +214,27 @@ class SimpleAI extends SanmaPlayer {
         return this._callback();
     }
 
+    action_kita(kita) {
+        if (kita.l === this._menfeng) {
+            this._n_kita++;
+        }
+        if (this._callback) this._callback();
+    }
+
     action_hule(hule) { this._callback(); }
     action_pingju(pingju) { this._callback(); }
     action_jieju(jieju) { this._callback(); }
+
+    _canKita() {
+        if (this.shoupai.lizhi) return false;
+        if (this.shan.paishu === 0) return false;
+        if (this.shoupai._bingpai.z[4] === 0) return false;
+        let shoupai = this.shoupai.clone();
+        shoupai.dapai('z4');
+        let xt_without = Majiang.Util.xiangting(shoupai);
+        let xt_with = Majiang.Util.xiangting(this.shoupai);
+        return xt_without <= xt_with;
+    }
 
     _chooseDapai(dapai) {
         let bestPai = dapai[dapai.length - 1];

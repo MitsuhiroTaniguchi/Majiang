@@ -136,6 +136,9 @@ function parseResponse(response, legal) {
     if (cleaned.includes('skip') || cleaned.includes('スキップ') || cleaned.includes('スルー')) {
         if (legal.includes('skip')) return 'skip';
     }
+    if (cleaned.includes('kita') || cleaned.includes('北抜') || cleaned === '北') {
+        if (legal.includes('kita')) return 'kita';
+    }
     for (const opt of legal) {
         if (opt !== 'skip' && cleaned.includes(opt.slice(0, 2))) return opt;
     }
@@ -162,30 +165,41 @@ class SanmaQwenPlayer extends SanmaPlayer {
         }
 
         if (this.shoupai.lizhi) {
+            if (this._canKita()) {
+                console.log(`  [Qwen] 北抜き(リーチ中)`);
+                return this._callback({ kita: '-' });
+            }
             const gang = this.get_gang_mianzi(this.shoupai);
             if (gang.length > 0) return this._callback({ gang: gang[0] });
             return this._callback({ dapai: this.shoupai._zimo });
         }
 
         const gangInfo = buildGangPrompt(this);
+        const canKita = this._canKita();
         const { prompt, legal } = buildDapaiPrompt(this);
 
+        let fullPrompt = prompt;
+        let allLegal = [...legal];
+
+        if (canKita) {
+            fullPrompt += `\n北抜き可:kita(z4を抜いてドラ+1,嶺上ツモ)`;
+            allLegal.push('kita');
+        }
         if (gangInfo) {
-            const allLegal = [...gangInfo.legal.filter(o => o !== 'skip'), ...legal];
-            const combinedPrompt = `${prompt}\nカンも可:[${gangInfo.legal.join(',')}]`;
-            this._asyncAction(combinedPrompt, allLegal, (chosen) => {
-                if (chosen === 'skip') return this._callback({ dapai: legal[0] });
-                if (gangInfo.legal.includes(chosen) && chosen !== 'skip') {
-                    console.log(`  [Qwen] カン:${chosen}`);
-                    return this._callback({ gang: chosen });
-                }
-                console.log(`  [Qwen] 打${chosen}`);
-                this._callback({ dapai: chosen });
-            });
-            return;
+            allLegal = [...gangInfo.legal.filter(o => o !== 'skip'), ...allLegal];
+            fullPrompt += `\nカンも可:[${gangInfo.legal.join(',')}]`;
         }
 
-        this._asyncAction(prompt, legal, (chosen) => {
+        this._asyncAction(fullPrompt, allLegal, (chosen) => {
+            if (chosen === 'kita') {
+                console.log(`  [Qwen] 北抜き`);
+                return this._callback({ kita: '-' });
+            }
+            if (chosen === 'skip') return this._callback({ dapai: legal[0] });
+            if (gangInfo && gangInfo.legal.includes(chosen) && chosen !== 'skip') {
+                console.log(`  [Qwen] カン:${chosen}`);
+                return this._callback({ gang: chosen });
+            }
             console.log(`  [Qwen] 打${chosen}`);
             this._callback({ dapai: chosen });
         });
@@ -246,9 +260,22 @@ class SanmaQwenPlayer extends SanmaPlayer {
         return this._callback();
     }
 
+    action_kita(kita) {
+        if (kita.l === this._menfeng) this._n_kita++;
+        if (this._callback) this._callback();
+    }
+
     action_hule(hule) { this._callback(); }
     action_pingju(pingju) { this._callback(); }
     action_jieju(jieju) { this._callback(); }
+
+    _canKita() {
+        if (this.shan.paishu === 0) return false;
+        if (this.shoupai.lizhi) {
+            return this.shoupai._zimo === 'z4';
+        }
+        return this.shoupai._bingpai.z[4] > 0;
+    }
 
     _asyncAction(prompt, legal, onResult) {
         queryLLM(prompt).then(response => {

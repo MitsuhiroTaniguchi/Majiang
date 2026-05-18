@@ -29,6 +29,12 @@ class SanmaShan extends Majiang.Shan {
         this._weikaigang = false;
         this._closed     = false;
     }
+
+    kitazimo() {
+        if (this._closed)     throw new Error(this);
+        if (this.paishu == 0) throw new Error(this);
+        return this._pai.shift();
+    }
 }
 
 class SanmaGame extends Majiang.Game {
@@ -97,6 +103,7 @@ class SanmaGame extends Majiang.Game {
         else if (this._status == 'dapai')    this.reply_dapai();
         else if (this._status == 'fulou')    this.reply_fulou();
         else if (this._status == 'gang')     this.reply_gang();
+        else if (this._status == 'kita')     this.reply_kita();
         else if (this._status == 'gangzimo') this.reply_zimo();
         else if (this._status == 'hule')     this.reply_hule();
         else if (this._status == 'pingju')   this.reply_pingju();
@@ -158,6 +165,7 @@ class SanmaGame extends Majiang.Game {
         this._yifa      = new Array(N).fill(0);
         this._n_gang    = new Array(N).fill(0);
         this._neng_rong = new Array(N).fill(1);
+        this._kita      = new Array(N).fill(0);
 
         this._hule        = [];
         this._hule_option = null;
@@ -324,6 +332,44 @@ class SanmaGame extends Majiang.Game {
         if (this._view) this._view.update(paipu);
     }
 
+    kita() {
+        let model = this._model;
+        let l = model.lunban;
+        this._yifa[l] = 0;
+
+        model.shoupai[l].dapai('z4');
+        this._kita[l]++;
+
+        let paipu = { kita: { l: l } };
+        this.add_paipu(paipu);
+
+        let msg = [];
+        for (let i = 0; i < N; i++) {
+            msg[i] = JSON.parse(JSON.stringify(paipu));
+        }
+        this.call_players('kita', msg);
+        if (this._view) this._view.update(paipu);
+    }
+
+    kitazimo() {
+        let model = this._model;
+        this._diyizimo = false;
+
+        let zimo = model.shan.kitazimo();
+        model.shoupai[model.lunban].zimo(zimo);
+
+        let paipu = { gangzimo: { l: model.lunban, p: zimo } };
+        this.add_paipu(paipu);
+
+        let msg = [];
+        for (let i = 0; i < N; i++) {
+            msg[i] = JSON.parse(JSON.stringify(paipu));
+            if (i != model.lunban) msg[i].gangzimo.p = '';
+        }
+        this.call_players('gangzimo', msg);
+        if (this._view) this._view.update(paipu);
+    }
+
     kaigang() {
         this._gang = null;
         if (!this._rule['カンドラあり']) return;
@@ -386,6 +432,58 @@ class SanmaGame extends Majiang.Game {
         };
         let hule = Majiang.Util.hule(shoupai, rongpai, param);
 
+        let n_kita = this._kita[menfeng];
+        if (n_kita > 0 && !hule.damanguan) {
+            hule.hupai = hule.hupai || [];
+            hule.hupai.push({ name: '北抜きドラ', fanshu: n_kita });
+            hule.fanshu = (hule.fanshu || 0) + n_kita;
+
+            let base;
+            if      (hule.fanshu >= 78) base = 8000 * 6;
+            else if (hule.fanshu >= 39) base = 8000 * 4;
+            else if (hule.fanshu >= 26) base = 8000 * 3;
+            else if (hule.fanshu >= 13) base = 8000 * 2;
+            else if (hule.fanshu >=  8) base = 8000;
+            else if (hule.fanshu >=  6) base = 6000;
+            else if (hule.fanshu >=  5) base = 4000;
+            else if (hule.fanshu >=  4) base = 3000;
+            else if (hule.fanshu >=  3) base = 2000;
+            else                        base = hule.fu * Math.pow(2, hule.fanshu + 2);
+            if (base > 2000) base = Math.min(base, base);
+
+            if (rongpai) {
+                let defen = Math.ceil(base * (menfeng == 0 ? 6 : 4) / 100) * 100;
+                let fenpei = [0, 0, 0, 0];
+                fenpei[menfeng] = defen + model.changbang * 300 + model.lizhibang * 1000;
+                fenpei[model.lunban] = -defen - model.changbang * 300;
+                hule.defen = defen;
+                hule.fenpei = fenpei;
+            } else {
+                let defen, fenpei = [0, 0, 0, 0];
+                if (menfeng == 0) {
+                    let each = Math.ceil(base * 2 / 100) * 100;
+                    defen = each * 2;
+                    for (let i = 0; i < 4; i++) {
+                        fenpei[i] = i == menfeng ? 0 : -each;
+                    }
+                } else {
+                    let oya = Math.ceil(base * 2 / 100) * 100;
+                    let ko  = Math.ceil(base * 1 / 100) * 100;
+                    defen = oya + ko;
+                    for (let i = 0; i < 4; i++) {
+                        if (i == menfeng) continue;
+                        fenpei[i] = (i == 0) ? -oya : -ko;
+                    }
+                }
+                fenpei[menfeng] = defen + model.changbang * 300 + model.lizhibang * 1000;
+                for (let i = 0; i < 4; i++) {
+                    if (i != menfeng) fenpei[i] -= model.changbang * 100;
+                }
+                hule.defen = defen;
+                hule.fenpei = fenpei;
+            }
+        }
+
         if (this._rule['連荘方式'] > 0 && menfeng == 0) this._lianzhuang = true;
         if (this._rule['場数'] == 0) this._lianzhuang = false;
 
@@ -408,7 +506,8 @@ class SanmaGame extends Majiang.Game {
                 damanguan:  hule.damanguan,
                 defen:      hule.defen,
                 hupai:      hule.hupai,
-                fenpei:     fenpei
+                fenpei:     fenpei,
+                n_kita:     n_kita
             }
         };
         for (let key of ['fu', 'fanshu', 'damanguan']) {
@@ -614,6 +713,11 @@ class SanmaGame extends Majiang.Game {
                 return this.delay(() => this.hule());
             }
         }
+        else if (reply.kita) {
+            if (this.allow_kita()) {
+                return this.delay(() => this.kita());
+            }
+        }
         else if (reply.gang) {
             if (this.get_gang_mianzi().find(m => m == reply.gang)) {
                 this.say('gang', model.lunban);
@@ -713,6 +817,37 @@ class SanmaGame extends Majiang.Game {
         this.delay(() => this.zimo(), 0);
     }
 
+    reply_kita() {
+        let model = this._model;
+
+        for (let i = 1; i < N; i++) {
+            let l = (model.lunban + i) % N;
+            let reply = this.get_reply(l);
+            if (reply.hule) {
+                let d = DIR_SUFFIX[(N + model.lunban - l) % N];
+                let p = 'z4' + d;
+                let hupai = model.shoupai[l].lizhi || model.shan.paishu == 0;
+                if (Majiang.Game.allow_hule(this._rule,
+                        model.shoupai[l], p,
+                        model.zhuangfeng, l, hupai,
+                        this._neng_rong[l]))
+                {
+                    if (this._rule['最大同時和了数'] == 1 && this._hule.length)
+                        continue;
+                    this.say('rong', l);
+                    this._hule.push(l);
+                }
+            }
+        }
+        if (this._hule.length) {
+            this._hule_option = 'qianggang';
+            this._dapai = 'z4';
+            return this.delay(() => this.hule());
+        }
+
+        this.delay(() => this.kitazimo(), 0);
+    }
+
     reply_fulou() {
         let model = this._model;
         if (this._gang) {
@@ -805,6 +940,16 @@ class SanmaGame extends Majiang.Game {
                 this._dapai + d, model.shan.paishu,
                 this._n_gang.reduce((x, y) => x + y));
         }
+    }
+
+    allow_kita() {
+        let model = this._model;
+        let shoupai = model.shoupai[model.lunban];
+        if (model.shan.paishu === 0) return false;
+        if (shoupai.lizhi) {
+            return shoupai._zimo === 'z4';
+        }
+        return shoupai._bingpai.z[4] > 0;
     }
 
     allow_hule(l) {
