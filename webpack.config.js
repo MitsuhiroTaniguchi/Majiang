@@ -14,7 +14,8 @@ module.exports = {
         hule:      './src/js/hule.js',
         drill:     './src/js/drill.js',
         dapai:     './src/js/dapai.js',
-        paiga:     './src/js/paiga.js',
+        paiga:          './src/js/paiga.js',
+        'qwen-autoplay': './src/js/qwen-autoplay.js',
     },
     output: {
         path:     __dirname + '/dist/js/',
