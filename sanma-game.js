@@ -1,6 +1,7 @@
 "use strict";
 
 const Majiang = require('@kobalab/majiang-core');
+const { mulberry32, shanSeed, buildPaiList, seededShuffle } = require('./seeded-random');
 
 const N = 3;
 const DIR_SUFFIX  = '_+-';   // offset→suffix: 0=self, 1=下家打, 2=上家打
@@ -14,23 +15,21 @@ function sanmaBaopai(indicators) {
 }
 
 class SanmaShan extends Majiang.Shan {
-    constructor(rule) {
+    constructor(rule, rng) {
         const tmpRule = Object.assign({}, rule, {
             '赤牌': { m: 0, p: rule['赤牌'].p, s: rule['赤牌'].s }
         });
         super(tmpRule);
+        rng = rng || Math.random;
 
-        const sanmaPai = this._pai.filter(p => {
+        const allPai = buildPaiList(tmpRule);
+        const sanmaPai = allPai.filter(p => {
             if (p[0] !== 'm') return true;
             const n = +p[1];
             return n === 0 || n === 1 || n === 9;
         });
 
-        this._pai = [];
-        while (sanmaPai.length) {
-            this._pai.push(sanmaPai.splice(Math.random() * sanmaPai.length, 1)[0]);
-        }
-
+        this._pai = seededShuffle(sanmaPai, rng);
         this._baopai   = [this._pai[4]];
         this._fubaopai = rule['裏ドラあり'] ? [this._pai[9]] : null;
         this._weikaigang = false;
@@ -46,7 +45,7 @@ class SanmaShan extends Majiang.Shan {
 
 class SanmaGame extends Majiang.Game {
 
-    constructor(players, callback, rule, title) {
+    constructor(players, callback, rule, title, hanchanSeed) {
         const sanmaRule = Object.assign({}, rule || Majiang.rule(), {
             '配給原点': 35000,
             '順位点': ['20.0', '0.0', '-20.0'],
@@ -58,6 +57,7 @@ class SanmaGame extends Majiang.Game {
         this._model.player_id = [0, 1, 2];
         this._players         = players;
         this._n_player        = N;
+        this._hanchanSeed     = hanchanSeed;
     }
 
     notify_players(type, msg) {
@@ -151,6 +151,11 @@ class SanmaGame extends Majiang.Game {
     qipai(shan) {
         let model = this._model;
 
+        if (!shan && this._hanchanSeed != null) {
+            const seed = shanSeed(this._hanchanSeed,
+                model.zhuangfeng, model.jushu, model.changbang);
+            shan = new SanmaShan(this._rule, mulberry32(seed));
+        }
         model.shan = shan || new SanmaShan(this._rule);
         for (let l = 0; l < N; l++) {
             let qipai = [];

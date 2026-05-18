@@ -1,24 +1,37 @@
 "use strict";
 
+const fs = require('fs');
+const path = require('path');
 const Majiang = require('@kobalab/majiang-core');
 const AI = require('@kobalab/majiang-ai');
 const QwenPlayer = require('./qwen-player');
 const SanmaGame = require('./sanma-game');
 const SanmaQwenPlayer = require('./sanma-qwen-player');
 const { SimpleAI } = require('./sanma-player');
+const { makeSeededShan, mulberry32, shanSeed } = require('./seeded-random');
 
 const DURATION_MS = parseInt(process.env.DURATION_HOURS || '12') * 3600 * 1000;
+const PAIPU_DIR = path.join(__dirname, 'paipu');
 
 let gameCount = 0;
 let results = [];
 let startTime;
+
+if (!fs.existsSync(PAIPU_DIR)) fs.mkdirSync(PAIPU_DIR);
+
+function savePaipu(paipu, seed, mode) {
+    const filename = `${String(seed).padStart(6, '0')}_${mode}.json`;
+    const filepath = path.join(PAIPU_DIR, filename);
+    fs.writeFileSync(filepath, JSON.stringify(paipu, null, 1));
+    console.log(`  牌譜: ${filepath}`);
+}
 
 function printResult(paipu, qwenSeat, mode) {
     const defen = paipu.defen;
     const rank = paipu.rank;
     const point = paipu.point;
     const nPlayers = mode === 'sanma' ? 3 : 4;
-    console.log(`\n===== 第${gameCount}半荘終了 (${mode}, Qwen席${qwenSeat}) =====`);
+    console.log(`\n===== 第${gameCount}半荘終了 (${mode}, seed=${gameCount - 1}, Qwen席${qwenSeat}) =====`);
     for (let i = 0; i < nPlayers; i++) {
         const tag = i === qwenSeat ? '[Qwen]' : '[AI]  ';
         console.log(`  ${tag} ${paipu.player[i]}: ${defen[i]}点 (${rank[i]}位, ${point[i] >= 0 ? '+' : ''}${point[i]})`);
@@ -69,12 +82,16 @@ function startGame() {
         process.exit(0);
     }
 
+    const seed = gameCount;
     gameCount++;
     const mode = gameCount % 2 === 1 ? 'yonma' : 'sanma';
+    const seatRng = mulberry32(seed * 31 + 12345);
+    const nPlayers = mode === 'sanma' ? 3 : 4;
+    const qwenSeat = seatRng() * nPlayers | 0;
+    const qijia = seatRng() * nPlayers | 0;
 
     if (mode === 'sanma') {
-        const qwenSeat = Math.floor(Math.random() * 3);
-        console.log(`\n>>>>> 第${gameCount}半荘開始 (三麻, Qwen席${qwenSeat}) <<<<<`);
+        console.log(`\n>>>>> 第${gameCount}半荘開始 (三麻, seed=${seed}, Qwen席${qwenSeat}) <<<<<`);
 
         const players = [];
         for (let i = 0; i < 3; i++) {
@@ -82,15 +99,16 @@ function startGame() {
         }
 
         const game = new SanmaGame(players, (paipu) => {
+            paipu.title = `Qwen三麻 seed=${seed}`;
+            savePaipu(paipu, seed, 'sanma');
             printResult(paipu, qwenSeat, 'sanma');
             startGame();
-        });
+        }, null, null, seed);
         game.speed = 0;
         game._model.player[qwenSeat] = 'Qwen';
-        game.kaiju();
+        game.kaiju(qijia);
     } else {
-        const qwenSeat = Math.floor(Math.random() * 4);
-        console.log(`\n>>>>> 第${gameCount}半荘開始 (四麻, Qwen席${qwenSeat}) <<<<<`);
+        console.log(`\n>>>>> 第${gameCount}半荘開始 (四麻, seed=${seed}, Qwen席${qwenSeat}) <<<<<`);
 
         const players = [];
         for (let i = 0; i < 4; i++) {
@@ -98,18 +116,32 @@ function startGame() {
         }
 
         const rule = Majiang.rule();
+        const origQipai = Majiang.Game.prototype.qipai;
         const game = new Majiang.Game(players, (paipu) => {
+            paipu.title = `Qwen四麻 seed=${seed}`;
+            savePaipu(paipu, seed, 'yonma');
             printResult(paipu, qwenSeat, 'yonma');
             startGame();
         }, rule);
         game.speed = 0;
         game._model.player[qwenSeat] = 'Qwen';
-        game.kaiju();
+
+        const origGameQipai = game.qipai.bind(game);
+        game.qipai = function(shan) {
+            if (!shan) {
+                const model = this._model;
+                shan = makeSeededShan(this._rule, seed,
+                    model.zhuangfeng, model.jushu, model.changbang);
+            }
+            return origQipai.call(this, shan);
+        };
+        game.kaiju(qijia);
     }
 }
 
 startTime = Date.now();
 const hours = DURATION_MS / 3600000;
-console.log(`Qwen麻雀耐久対局: ${hours}時間, 三麻四麻交互, ランダム席`);
+console.log(`Qwen麻雀耐久対局: ${hours}時間, 三麻四麻交互, seed=0~`);
 console.log(`モデル: Qwen3.6-27B-UD-IQ2_XXS (llama.cpp)`);
+console.log(`牌譜保存先: ${PAIPU_DIR}`);
 startGame();
