@@ -85,12 +85,20 @@ function buildDapaiPrompt(player) {
 
     const allOptions = [...dapai, ...lizhi_candidates];
 
+    const xiangting = Majiang.Util.xiangting(player.shoupai);
+    const tingpai = xiangting === 0 ? Majiang.Util.tingpai(player.shoupai) : [];
+
     const lines = [];
     lines.push(visibleInfo(player));
     lines.push(`手牌:${player.shoupai.toString()}`);
+    if (xiangting === 0) {
+        lines.push(`テンパイ! 待ち:[${tingpai.join(',')}]`);
+    } else {
+        lines.push(`向聴数:${xiangting}`);
+    }
     lines.push(discardInfo(player));
     if (lizhi_candidates.length > 0) {
-        lines.push(`(*付=リーチ宣言)`);
+        lines.push(`(*付=リーチ宣言。テンパイならリーチ推奨)`);
     }
     lines.push(`選択:[${allOptions.join(',')}]`);
     return { prompt: lines.join('\n'), legal: allOptions };
