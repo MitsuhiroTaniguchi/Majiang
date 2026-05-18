@@ -86,14 +86,15 @@ function buildDapaiPrompt(player) {
     const allOptions = [...dapai, ...lizhi_candidates];
 
     const xiangting = Majiang.Util.xiangting(player.shoupai);
-    const tingpai = xiangting === 0 ? Majiang.Util.tingpai(player.shoupai) : [];
+    const tingpai = xiangting === 0
+        ? (Majiang.Util.tingpai(player.shoupai) || []) : [];
 
     const lines = [];
     lines.push(visibleInfo(player));
     lines.push(`手牌:${player.shoupai.toString()}`);
-    if (xiangting === 0) {
+    if (xiangting === 0 && tingpai.length > 0) {
         lines.push(`テンパイ! 待ち:[${tingpai.join(',')}]`);
-    } else {
+    } else if (xiangting > 0) {
         lines.push(`向聴数:${xiangting}`);
     }
     lines.push(discardInfo(player));
