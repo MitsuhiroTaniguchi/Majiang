@@ -6,6 +6,13 @@ const N = 3;
 const DIR_SUFFIX  = '_+-';   // offset→suffix: 0=self, 1=下家打, 2=上家打
 const DIR_OFFSET  = '_-+';   // suffix→offset: _→0, -→1(上家called), +→2(下家called)
 
+function sanmaBaopai(indicators) {
+    return indicators.map(p => {
+        if (p && p[0] === 'm' && (+p[1] || 5) === 1) return 'm8';
+        return p;
+    });
+}
+
 class SanmaShan extends Majiang.Shan {
     constructor(rule) {
         const tmpRule = Object.assign({}, rule, {
@@ -335,7 +342,8 @@ class SanmaGame extends Majiang.Game {
     kita() {
         let model = this._model;
         let l = model.lunban;
-        this._yifa[l] = 0;
+        this._diyizimo = false;
+        this._yifa = new Array(N).fill(0);
 
         model.shoupai[l].dapai('z4');
         this._kita[l]++;
@@ -425,8 +433,8 @@ class SanmaGame extends Majiang.Game {
                                 : menfeng == 0                   ? 1
                                 :                                  2
             },
-            baopai:         model.shan.baopai,
-            fubaopai:       fubaopai,
+            baopai:         sanmaBaopai(model.shan.baopai),
+            fubaopai:       fubaopai ? sanmaBaopai(fubaopai) : null,
             jicun:          { changbang: model.changbang,
                               lizhibang: model.lizhibang }
         };
