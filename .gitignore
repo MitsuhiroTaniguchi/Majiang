@@ -3,3 +3,5 @@ dist/js/
 dist/css/
 dist/*.html
 *.log
+.DS_Store
+.antigravitycli/
