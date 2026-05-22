@@ -2,12 +2,37 @@
 """MahjongLM inference server — loads mitsutani/mahjonglm-10m and serves
 next-token predictions over HTTP for the Node.js mahjong player."""
 
-import json
-import sys
 import os
-import torch
+import sys
+
+# Disable parallel tokenizer processing to eliminate background thread spin-locks
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Limit math/neural network backend threads to 1 to prevent idle CPU spinning
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizerFast
+
+# Try importing MLX and MLX-LM
+USE_MLX = False
+try:
+    import mlx.core as mx
+    import mlx_lm.utils
+    from mlx_lm.models.cache import KVCache
+    from huggingface_hub import snapshot_download
+    from pathlib import Path
+    USE_MLX = True
+    
+    # Configure strict memory limits to keep footprint minimal
+    mx.set_cache_limit(64 * 1024 * 1024)       # 64MB cache limit
+    mx.set_memory_limit(256 * 1024 * 1024)     # 256MB hard memory ceiling
+except ImportError:
+    print("MLX is not installed or not supported. Falling back to PyTorch.")
 
 MODEL_ID = os.environ.get("MAHJONGLM_MODEL", "mitsutani/mahjonglm-10m")
 TOKENIZER_ID = os.environ.get("MAHJONGLM_TOKENIZER", "")
@@ -42,6 +67,8 @@ if tokenizer is None:
     sys.exit(1)
 
 def load_model(model_path):
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM
     config = AutoConfig.from_pretrained(model_path)
     rope_parameters = getattr(config, "rope_parameters", None) or {}
     if "rope_theta" in rope_parameters:
@@ -49,28 +76,67 @@ def load_model(model_path):
     model = AutoModelForCausalLM.from_pretrained(model_path, config=config, torch_dtype=torch.float32)
     return model, config
 
-print(f"Loading model from {MODEL_ID} ...")
-try:
-    model, config = load_model(MODEL_ID)
-except Exception as e:
-    print(f"  Failed to load from HuggingFace: {e.__class__.__name__}")
-    local_model = os.path.join(SCRIPT_DIR, "model")
-    if os.path.isdir(local_model):
-        print(f"  Trying local: {local_model}")
-        model, config = load_model(local_model)
-    else:
-        print("ERROR: Could not load model. Set MAHJONGLM_MODEL=/path/to/model or log in with `huggingface-cli login`")
-        sys.exit(1)
-model.eval()
+def load_model_mlx(model_path_or_id):
+    try:
+        if os.path.isdir(model_path_or_id):
+            model_dir = Path(model_path_or_id)
+        else:
+            model_dir = Path(snapshot_download(repo_id=model_path_or_id))
+            
+        config_path = model_dir / "config.json"
+        if not config_path.exists():
+            return None, None
+            
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            
+        rope_parameters = config.get("rope_parameters", {})
+        if "rope_theta" in rope_parameters:
+            config["rope_theta"] = rope_parameters["rope_theta"]
+            
+        model, config = mlx_lm.utils.load_model(model_dir, model_config=config)
+        return model, config
+    except Exception as e:
+        print(f"  [mlx] Failed to load MLX model: {e}")
+        return None, None
 
-if torch.backends.mps.is_available():
-    device = "mps"
-elif torch.cuda.is_available():
-    device = "cuda"
+model = None
+config = None
+backend = "pytorch"
+device = "cpu"
+
+if USE_MLX:
+    print(f"Trying to load model via MLX from {MODEL_ID} ...")
+    model, config = load_model_mlx(MODEL_ID)
+    if model is not None:
+        backend = "mlx"
+
+if model is None:
+    import torch
+    print(f"Loading model via PyTorch from {MODEL_ID} ...")
+    try:
+        model, config = load_model(MODEL_ID)
+    except Exception as e:
+        print(f"  Failed to load from HuggingFace: {e.__class__.__name__}")
+        local_model = os.path.join(SCRIPT_DIR, "model")
+        if os.path.isdir(local_model):
+            print(f"  Trying local PyTorch: {local_model}")
+            model, config = load_model(local_model)
+        else:
+            print("ERROR: Could not load model via PyTorch. Set MAHJONGLM_MODEL=/path/to/model or log in with `huggingface-cli login`")
+            sys.exit(1)
+            
+    model.eval()
+    if torch.backends.mps.is_available():
+        device = "mps"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+    model = model.to(device)
+    print(f"PyTorch model loaded on {device} (vocab={tokenizer.vocab_size})")
 else:
-    device = "cpu"
-model = model.to(device)
-print(f"Model loaded on {device}  (vocab={tokenizer.vocab_size})")
+    print(f"MLX model loaded successfully (vocab={tokenizer.vocab_size})")
 
 vocab = tokenizer.get_vocab()
 id_to_token = {v: k for k, v in vocab.items()}
@@ -81,7 +147,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._json({"status": "ok", "device": device, "vocab_size": VOCAB_SIZE})
+            dev_name = "mlx" if backend == "mlx" else device
+            self._json({"status": "ok", "device": dev_name, "vocab_size": VOCAB_SIZE})
             return
         if self.path == "/vocab":
             self._json({"vocab": vocab})
@@ -104,18 +171,17 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 ids.append(tid)
 
-            input_ids = torch.tensor([ids], dtype=torch.long, device=device)
-            generated = []
+            if backend == "mlx":
+                input_ids = mx.array([ids], dtype=mx.int32)
+                caches = [KVCache() for _ in range(len(model.layers))]
+                generated = []
 
-            with torch.no_grad():
-                past = None
                 for step in range(n):
-                    out = model(input_ids, past_key_values=past, use_cache=True)
-                    logits = out.logits[0, -1, :].float()
-                    past = out.past_key_values
+                    out = model(input_ids, cache=caches)
+                    logits = out[0, -1, :]
 
                     if allowed:
-                        mask = torch.full((VOCAB_SIZE,), float("-inf"), device=device)
+                        mask = mx.full((VOCAB_SIZE,), float("-inf"))
                         for tok in allowed:
                             tid = vocab.get(tok)
                             if tid is not None:
@@ -125,15 +191,52 @@ class Handler(BaseHTTPRequestHandler):
                     if temperature > 0 and temperature != 1.0:
                         logits = logits / temperature
 
-                    probs = torch.softmax(logits, dim=-1)
-                    token_id = int(torch.argmax(logits).item())
+                    probs = mx.softmax(logits, axis=-1)
+                    token_id = int(mx.argmax(logits).item())
                     token_str = id_to_token.get(token_id, "<unk>")
 
-                    generated.append({"token": token_str, "prob": round(float(probs[token_id]), 4)})
-                    input_ids = torch.tensor([[token_id]], dtype=torch.long, device=device)
+                    generated.append({"token": token_str, "prob": round(float(probs[token_id].item()), 4)})
+                    input_ids = mx.array([[token_id]], dtype=mx.int32)
 
-            self._json({"generated": generated})
-            return
+                self._json({"generated": generated})
+                
+                # Reclaim intermediate MLX buffers and memory
+                mx.metal.clear_cache()
+                import gc
+                gc.collect()
+                return
+            else:
+                import torch
+                input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+                generated = []
+
+                with torch.no_grad():
+                    past = None
+                    for step in range(n):
+                        out = model(input_ids, past_key_values=past, use_cache=True)
+                        logits = out.logits[0, -1, :].float()
+                        past = out.past_key_values
+
+                        if allowed:
+                            mask = torch.full((VOCAB_SIZE,), float("-inf"), device=device)
+                            for tok in allowed:
+                                tid = vocab.get(tok)
+                                if tid is not None:
+                                    mask[tid] = 0.0
+                            logits = logits + mask
+
+                        if temperature > 0 and temperature != 1.0:
+                            logits = logits / temperature
+
+                        probs = torch.softmax(logits, dim=-1)
+                        token_id = int(torch.argmax(logits).item())
+                        token_str = id_to_token.get(token_id, "<unk>")
+
+                        generated.append({"token": token_str, "prob": round(float(probs[token_id]), 4)})
+                        input_ids = torch.tensor([[token_id]], dtype=torch.long, device=device)
+
+                self._json({"generated": generated})
+                return
 
         self._json({"error": "not found"}, 404)
 
