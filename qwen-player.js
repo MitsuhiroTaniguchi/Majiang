@@ -1,10 +1,13 @@
 "use strict";
 
 const Majiang = require('@kobalab/majiang-core');
-
-const LLAMA_URL = process.env.LLAMA_URL || 'http://localhost:8080';
+const { queryLLM: _queryLLM } = require('./llm-provider');
 
 const WIND = ['東', '南', '西', '北'];
+const ZIHAI = {z1:'東',z2:'南',z3:'西',z4:'北',z5:'白',z6:'發',z7:'中'};
+const ZIHAI_REV = {};
+for (const [c, k] of Object.entries(ZIHAI)) ZIHAI_REV[k] = c;
+ZIHAI_REV['発'] = 'z6';
 
 const SYSTEM_MSG =
 `あなたは日本式リーチ麻雀のAIプレイヤーです。
@@ -13,29 +16,13 @@ const SYSTEM_MSG =
   m = 萬子 (1-9)
   p = 筒子 (1-9)
   s = 索子 (1-9)
-  z = 字牌 (1=東 2=南 3=西 4=北 5=白 6=發 7=中)
+  字牌: 東 南 西 北 白 發 中
   0 = 赤5 (例: m0 = 赤萬子5)
 
 回答は合法手リストから最善の1つを選び、その記号だけ答えてください。`;
 
 async function queryLLM(prompt) {
-    const body = JSON.stringify({
-        messages: [
-            { role: 'system', content: SYSTEM_MSG },
-            { role: 'user', content: prompt },
-        ],
-        max_tokens: 12,
-        temperature: 0.3,
-        repeat_penalty: 1.0,
-    });
-
-    const res = await fetch(`${LLAMA_URL}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-    });
-    const data = await res.json();
-    return (data.choices?.[0]?.message?.content || '').trim();
+    return _queryLLM(SYSTEM_MSG + '\n\n' + prompt);
 }
 
 function expandPai(compact) {
@@ -45,7 +32,8 @@ function expandPai(compact) {
         if ('mpsz'.includes(ch)) {
             s = ch;
         } else if ('0123456789'.includes(ch)) {
-            tiles.push(s + ch);
+            const code = s + ch;
+            tiles.push(ZIHAI[code] || code);
         }
     }
     return tiles;
@@ -66,8 +54,8 @@ function formatShoupai(shoupaiStr) {
 
 function formatOption(opt) {
     if (opt === 'skip' || opt === 'kita') return opt;
-    if (opt.match(/^[mpsz]\d\*$/)) return opt.slice(0, 2) + ' *';
-    if (opt.match(/^[mpsz]\d$/)) return opt;
+    if (opt.match(/^[mpsz]\d\*$/)) return (ZIHAI[opt.slice(0,2)] || opt.slice(0,2)) + ' *';
+    if (opt.match(/^[mpsz]\d$/)) return ZIHAI[opt] || opt;
     const tiles = expandPai(opt);
     return tiles.join(' ');
 }
@@ -77,7 +65,7 @@ function stripDir(opt) {
 }
 
 function formatHe(paiArr) {
-    return paiArr.map(p => p.slice(0, 2)).join(' ');
+    return paiArr.map(p => { const c = p.slice(0, 2); return ZIHAI[c] || c; }).join(' ');
 }
 
 function visibleInfo(player) {
@@ -87,7 +75,7 @@ function visibleInfo(player) {
     lines.push(`${WIND[model.zhuangfeng]} ${model.jushu + 1}局 ${model.changbang}本場`);
     lines.push(`自風: ${WIND[mf]}`);
     lines.push(`残: ${player.shan.paishu}枚`);
-    lines.push(`ドラ: ${model.shan.baopai.map(p => p || '').join(' ')}`);
+    lines.push(`ドラ表示牌: ${model.shan.baopai.map(p => { if (!p) return ''; const c = p.slice(0,2); return ZIHAI[c] || c; }).join(' ')}`);
 
     const scores = [];
     for (let i = 0; i < 4; i++) {
@@ -106,8 +94,7 @@ function discardInfo(player) {
     const parts = [];
     for (let i = 0; i < 4; i++) {
         const rel = (i - mf + 4) % 4;
-        if (rel === 0) continue;
-        const tag = ['', '下家', '対面', '上家'][rel];
+        const tag = ['自分', '下家', '対面', '上家'][rel];
         const he = model.he[i];
         if (he && he._pai && he._pai.length > 0) {
             parts.push(`${tag}捨牌: ${formatHe(he._pai)}`);
@@ -136,7 +123,7 @@ function buildDapaiPrompt(player) {
     lines.push(visibleInfo(player));
     lines.push(`手牌: ${formatShoupai(player.shoupai.toString())}`);
     if (xiangting === 0 && tingpai.length > 0) {
-        lines.push(`テンパイ! 待ち: ${tingpai.join(' ')}`);
+        lines.push(`テンパイ! 待ち: ${tingpai.map(p => ZIHAI[p] || p).join(' ')}`);
     } else if (xiangting > 0) {
         lines.push(`向聴数: ${xiangting}`);
     }
@@ -146,6 +133,7 @@ function buildDapaiPrompt(player) {
         lines.push(`(* 付きはリーチ宣言。テンパイならリーチ推奨)`);
     }
     lines.push(`選択: [${allOptions.map(formatOption).join(', ')}]`);
+    lines.push('最善手を選択してください。');
     return { prompt: lines.join('\n'), legal: allOptions };
 }
 
@@ -166,8 +154,10 @@ function buildFulouPrompt(player, dapaiMsg) {
     const lines = [];
     lines.push(visibleInfo(player));
     lines.push(`手牌: ${formatShoupai(player.shoupai.toString())}`);
-    lines.push(`他家打牌: ${dapaiMsg.p.slice(0, 2)}`);
+    const pc = dapaiMsg.p.slice(0, 2);
+    lines.push(`他家打牌: ${ZIHAI[pc] || pc}`);
     lines.push(`選択: [${options.map(formatOption).join(', ')}] skip = スルー`);
+    lines.push('最善手を選択してください。');
     return { prompt: lines.join('\n'), legal: options };
 }
 
@@ -183,7 +173,10 @@ function buildGangPrompt(player) {
 }
 
 function parseResponse(response, legal) {
-    const cleaned = response.replace(/[\s`「」　*\+\=\-]/g, '');
+    let cleaned = response.replace(/[\s`「」　*\+\=\-]/g, '');
+    for (const [kanji, code] of Object.entries(ZIHAI_REV)) {
+        cleaned = cleaned.split(kanji).join(code);
+    }
 
     for (const opt of legal) {
         const optClean = stripDir(opt).replace(/[\s*]/g, '');
@@ -226,7 +219,7 @@ class QwenPlayer extends Majiang.Player {
 
         if (this.allow_hule(this.shoupai, null,
                 gangzimo || this.shoupai.lizhi || this.shan.paishu === 0)) {
-            console.log(`  [Qwen] ツモ和了!`);
+            console.log(`  [LLM] ツモ和了!`);
             return this._callback({ hule: '-' });
         }
 
@@ -254,17 +247,17 @@ class QwenPlayer extends Majiang.Player {
                     return this._callback({ dapai: legal[0] });
                 }
                 if (gangInfo.legal.includes(chosen) && chosen !== 'skip') {
-                    console.log(`  [Qwen] カン:${chosen}`);
+                    console.log(`  [LLM] カン:${chosen}`);
                     return this._callback({ gang: chosen });
                 }
-                console.log(`  [Qwen] 打${chosen}`);
+                console.log(`  [LLM] 打${chosen}`);
                 this._callback({ dapai: chosen });
             });
             return;
         }
 
         this._asyncAction(prompt, legal, (chosen) => {
-            console.log(`  [Qwen] 打${chosen}`);
+            console.log(`  [LLM] 打${chosen}`);
             this._callback({ dapai: chosen });
         });
     }
@@ -280,7 +273,7 @@ class QwenPlayer extends Majiang.Player {
         const d = ['', '+', '=', '-'][(4 + this._model.lunban - this._menfeng) % 4];
         const rongpai = dapai.p.slice(0, 2) + d;
         if (this.allow_hule(this.shoupai, rongpai)) {
-            console.log(`  [Qwen] ロン!`);
+            console.log(`  [LLM] ロン!`);
             return this._callback({ hule: '-' });
         }
 
@@ -297,7 +290,7 @@ class QwenPlayer extends Majiang.Player {
                 }
                 return this._callback();
             }
-            console.log(`  [Qwen] 鳴き:${chosen}`);
+            console.log(`  [LLM] 鳴き:${chosen}`);
             this._callback({ fulou: chosen });
         });
     }
@@ -308,7 +301,7 @@ class QwenPlayer extends Majiang.Player {
 
         const { prompt, legal } = buildDapaiPrompt(this);
         this._asyncAction(prompt, legal, (chosen) => {
-            console.log(`  [Qwen] 鳴き後打${chosen}`);
+            console.log(`  [LLM] 鳴き後打${chosen}`);
             this._callback({ dapai: chosen });
         });
     }
@@ -319,7 +312,7 @@ class QwenPlayer extends Majiang.Player {
             const d = ['', '+', '=', '-'][(4 + this._model.lunban - this._menfeng) % 4];
             const rongpai = gang.m[0] + gang.m.slice(-1) + d;
             if (this.allow_hule(this.shoupai, rongpai, true)) {
-                console.log(`  [Qwen] 槍槓ロン!`);
+                console.log(`  [LLM] 槍槓ロン!`);
                 return this._callback({ hule: '-' });
             }
         }
@@ -335,8 +328,8 @@ class QwenPlayer extends Majiang.Player {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {
-            console.error(`  [Qwen] LLM error: ${err.message}, fallback`);
-            onResult(legal[0]);
+            console.error(`  [LLM] fatal: ${err.message}`);
+            process.exit(1);
         });
     }
 }
