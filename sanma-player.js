@@ -217,6 +217,9 @@ class SimpleAI extends SanmaPlayer {
 
     action_kita(kita) {
         this._kita_all[kita.l]++;
+        if (this._model && this._model.shoupai && this._model.shoupai[kita.l]) {
+            this._model.shoupai[kita.l].dapai('z4');
+        }
         if (kita.l === this._menfeng) {
             this._n_kita++;
         }
