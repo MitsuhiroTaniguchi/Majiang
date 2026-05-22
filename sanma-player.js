@@ -90,13 +90,14 @@ class SanmaPlayer extends Majiang.Player {
         super();
         this._model = new SanmaBoard();
         this._n_kita = 0;
+        this._kita_all = [0, 0, 0];
     }
 
     action(msg, callback) {
         this._callback = callback;
 
         if      (msg.kaiju)    this.kaiju  (msg.kaiju);
-        else if (msg.qipai)    { this._n_kita = 0; this.qipai(msg.qipai); }
+        else if (msg.qipai)    { this._n_kita = 0; this._kita_all = [0, 0, 0]; this.qipai(msg.qipai); }
         else if (msg.zimo)     this.zimo   (msg.zimo);
         else if (msg.dapai)    this.dapai  (msg.dapai);
         else if (msg.fulou)    this.fulou  (msg.fulou);
@@ -215,6 +216,7 @@ class SimpleAI extends SanmaPlayer {
     }
 
     action_kita(kita) {
+        this._kita_all[kita.l]++;
         if (kita.l === this._menfeng) {
             this._n_kita++;
         }
