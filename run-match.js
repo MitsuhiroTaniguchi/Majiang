@@ -5,24 +5,166 @@ const path = require('path');
 const Majiang = require('@kobalab/majiang-core');
 const AI = require('@kobalab/majiang-ai');
 const QwenPlayer = require('./qwen-player');
+const MahjongLMPlayer = require('./mahjonglm-player');
+const SanmaMahjongLMPlayer = require('./sanma-mahjonglm-player');
 const SanmaGame = require('./sanma-game');
 const SanmaQwenPlayer = require('./sanma-qwen-player');
 const { SimpleAI } = require('./sanma-player');
 const { makeSeededShan, mulberry32, shanSeed } = require('./seeded-random');
+const { broadcast } = require('./live-server');
+const llm = require('./llm-provider');
 
+const YONMA_GAMES = parseInt(process.env.YONMA_GAMES || '0');
+const SANMA_GAMES = parseInt(process.env.SANMA_GAMES || '0');
 const DURATION_MS = parseInt(process.env.DURATION_HOURS || '12') * 3600 * 1000;
+const USE_GAME_COUNT = YONMA_GAMES > 0 || SANMA_GAMES > 0;
 const PAIPU_DIR = path.join(__dirname, 'paipu');
 
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'opencode';
+const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-v4-flash-free';
+const PLAYER_TYPE = process.env.PLAYER_TYPE || 'llm';
+const PLAYER_NAME = process.env.PLAYER_NAME || (PLAYER_TYPE === 'mahjonglm' ? 'MahjongLM' : LLM_MODEL || LLM_PROVIDER);
+
 let gameCount = 0;
+let yonmaPlayed = 0;
+let sanmaPlayed = 0;
 let results = [];
 let startTime;
+let currentMode = '';
+let currentQwenSeat = 0;
+
+class LiveView {
+    constructor(model, mode, qwenSeat) {
+        this._model = model;
+        this._mode = mode;
+        this._qwenSeat = qwenSeat;
+    }
+    kaiju() {
+        const m = this._model;
+        const qs = this._qwenSeat;
+        let player;
+        if (this._mode === 'sanma') {
+            player = [PLAYER_NAME, m.player[(qs + 1) % 3], '', m.player[(qs + 2) % 3]];
+        } else {
+            player = [PLAYER_NAME, m.player[(qs + 1) % 4], m.player[(qs + 2) % 4], m.player[(qs + 3) % 4]];
+        }
+        broadcast('kaiju', {
+            title: m.title,
+            player,
+            qijia: m.qijia,
+            mode: this._mode,
+            qwenSeat: qs,
+            gameCount,
+        });
+    }
+    redraw() {
+        const m = this._model;
+        const qs = this._qwenSeat;
+        const n = this._mode === 'sanma' ? 3 : 4;
+
+        const shoupai = ['', '', '', ''];
+        const defen = [0, 0, 0, 0];
+        const player_id = [0, 0, 0, 0];
+
+        if (this._mode === 'sanma') {
+            for (let l = 0; l < 3; l++) {
+                shoupai[l] = m.shoupai[l].toString();
+                const realPid = (m.qijia + m.jushu + l) % 3;
+                if (realPid === qs) player_id[l] = 0;
+                else if (realPid === (qs + 1) % 3) player_id[l] = 1;
+                else player_id[l] = 3;
+                defen[l] = m.defen[realPid];
+            }
+            player_id[3] = 2;
+        } else {
+            for (let l = 0; l < 4; l++) {
+                shoupai[l] = m.shoupai[l].toString();
+                const realPid = (m.qijia + m.jushu + l) % 4;
+                player_id[l] = (realPid - qs + 4) % 4;
+                defen[l] = m.defen[realPid];
+            }
+        }
+
+        broadcast('qipai', {
+            zhuangfeng: m.zhuangfeng,
+            jushu: m.jushu,
+            changbang: m.changbang,
+            lizhibang: m.lizhibang,
+            defen,
+            baopai: m.shan.baopai[0],
+            shoupai,
+            paishu: m.shan.paishu,
+            mode: this._mode,
+            player_id,
+        });
+    }
+    update(paipu) {
+        if (!paipu) { broadcast('update', null); return; }
+        if (this._mode === 'sanma') {
+            paipu = JSON.parse(JSON.stringify(paipu));
+            if (paipu.hule && paipu.hule.fenpei)
+                while (paipu.hule.fenpei.length < 4) paipu.hule.fenpei.push(0);
+            if (paipu.pingju) {
+                if (paipu.pingju.fenpei)
+                    while (paipu.pingju.fenpei.length < 4) paipu.pingju.fenpei.push(0);
+                if (paipu.pingju.shoupai)
+                    while (paipu.pingju.shoupai.length < 4) paipu.pingju.shoupai.push('');
+            }
+        }
+        broadcast('update', paipu);
+    }
+    summary(paipu) { broadcast('summary', { results }); }
+    say(name, l) { broadcast('say', { name, l }); }
+}
 
 if (!fs.existsSync(PAIPU_DIR)) fs.mkdirSync(PAIPU_DIR);
+
+function padSanmaPaipu(paipu) {
+    const p = JSON.parse(JSON.stringify(paipu));
+    while (p.player.length < 4) p.player.push('');
+    while (p.defen.length < 4)  p.defen.push(0);
+    while (p.rank.length < 4)   p.rank.push(4);
+    while (p.point.length < 4)  p.point.push(0);
+    for (let li = 0; li < p.log.length; li++) {
+        const newLog = [];
+        let afterKita = false;
+        for (const entry of p.log[li]) {
+            if (entry.kita) {
+                newLog.push({ dapai: { l: entry.kita.l, p: 'z4_' } });
+                afterKita = true;
+                continue;
+            }
+            if (afterKita && entry.gangzimo) {
+                newLog.push({ zimo: entry.gangzimo });
+                afterKita = false;
+                continue;
+            }
+            afterKita = false;
+            if (entry.qipai) {
+                const q = entry.qipai;
+                while (q.defen.length < 4)   q.defen.push(0);
+                while (q.shoupai.length < 4) q.shoupai.push('');
+            }
+            if (entry.hule && entry.hule.fenpei)
+                while (entry.hule.fenpei.length < 4) entry.hule.fenpei.push(0);
+            if (entry.pingju) {
+                if (entry.pingju.fenpei)
+                    while (entry.pingju.fenpei.length < 4) entry.pingju.fenpei.push(0);
+                if (entry.pingju.shoupai)
+                    while (entry.pingju.shoupai.length < 4) entry.pingju.shoupai.push('');
+            }
+            newLog.push(entry);
+        }
+        p.log[li] = newLog;
+    }
+    return p;
+}
 
 function savePaipu(paipu, seed, mode) {
     const filename = `${String(seed).padStart(6, '0')}_${mode}.json`;
     const filepath = path.join(PAIPU_DIR, filename);
-    fs.writeFileSync(filepath, JSON.stringify(paipu, null, 1));
+    const data = mode === 'sanma' ? padSanmaPaipu(paipu) : paipu;
+    fs.writeFileSync(filepath, JSON.stringify(data, null, 1));
     console.log(`  牌譜: ${filepath}`);
 }
 
@@ -31,9 +173,9 @@ function printResult(paipu, qwenSeat, mode) {
     const rank = paipu.rank;
     const point = paipu.point;
     const nPlayers = mode === 'sanma' ? 3 : 4;
-    console.log(`\n===== 第${gameCount}半荘終了 (${mode}, seed=${gameCount - 1}, Qwen席${qwenSeat}) =====`);
+    console.log(`\n===== 第${gameCount}半荘終了 (${mode}, seed=${gameCount - 1}, ${PLAYER_NAME}席${qwenSeat}) =====`);
     for (let i = 0; i < nPlayers; i++) {
-        const tag = i === qwenSeat ? '[Qwen]' : '[AI]  ';
+        const tag = i === qwenSeat ? `[${PLAYER_NAME}]` : '[AI]  ';
         console.log(`  ${tag} ${paipu.player[i]}: ${defen[i]}点 (${rank[i]}位, ${point[i] >= 0 ? '+' : ''}${point[i]})`);
     }
     results.push({
@@ -77,54 +219,75 @@ function printSummary() {
 }
 
 function startGame() {
-    if (Date.now() - startTime >= DURATION_MS) {
+    if (USE_GAME_COUNT) {
+        if (yonmaPlayed >= YONMA_GAMES && sanmaPlayed >= SANMA_GAMES) {
+            printSummary();
+            process.exit(0);
+        }
+    } else if (Date.now() - startTime >= DURATION_MS) {
         printSummary();
         process.exit(0);
     }
 
     const seed = gameCount;
     gameCount++;
-    const mode = gameCount % 2 === 1 ? 'yonma' : 'sanma';
+
+    let mode;
+    if (USE_GAME_COUNT) {
+        if (yonmaPlayed >= YONMA_GAMES) mode = 'sanma';
+        else if (sanmaPlayed >= SANMA_GAMES) mode = 'yonma';
+        else mode = gameCount % 2 === 1 ? 'yonma' : 'sanma';
+    } else {
+        mode = gameCount % 2 === 1 ? 'yonma' : 'sanma';
+    }
     const seatRng = mulberry32(seed * 31 + 12345);
     const nPlayers = mode === 'sanma' ? 3 : 4;
     const qwenSeat = seatRng() * nPlayers | 0;
     const qijia = seatRng() * nPlayers | 0;
 
     if (mode === 'sanma') {
-        console.log(`\n>>>>> 第${gameCount}半荘開始 (三麻, seed=${seed}, Qwen席${qwenSeat}) <<<<<`);
+        console.log(`\n>>>>> 第${gameCount}半荘開始 (三麻, seed=${seed}, ${PLAYER_NAME}席${qwenSeat}) <<<<<`);
 
         const players = [];
         for (let i = 0; i < 3; i++) {
-            players[i] = (i === qwenSeat) ? new SanmaQwenPlayer() : new SimpleAI();
+            players[i] = (i === qwenSeat)
+                ? (PLAYER_TYPE === 'mahjonglm' ? new SanmaMahjongLMPlayer() : new SanmaQwenPlayer())
+                : new SimpleAI();
         }
 
         const game = new SanmaGame(players, (paipu) => {
-            paipu.title = `Qwen三麻 seed=${seed}`;
+            paipu.title = `${PLAYER_NAME}三麻 seed=${seed}`;
             savePaipu(paipu, seed, 'sanma');
             printResult(paipu, qwenSeat, 'sanma');
+            sanmaPlayed++;
             startGame();
         }, null, null, seed);
         game.speed = 0;
-        game._model.player[qwenSeat] = 'Qwen';
+        { let pn = 2; for (let i = 0; i < 3; i++) game._model.player[i] = i === qwenSeat ? PLAYER_NAME : `P${pn++}`; }
+        game.view = new LiveView(game._model, 'sanma', qwenSeat);
         game.kaiju(qijia);
     } else {
-        console.log(`\n>>>>> 第${gameCount}半荘開始 (四麻, seed=${seed}, Qwen席${qwenSeat}) <<<<<`);
+        console.log(`\n>>>>> 第${gameCount}半荘開始 (四麻, seed=${seed}, ${PLAYER_NAME}席${qwenSeat}) <<<<<`);
 
         const players = [];
         for (let i = 0; i < 4; i++) {
-            players[i] = (i === qwenSeat) ? new QwenPlayer() : new AI();
+            players[i] = (i === qwenSeat)
+                ? (PLAYER_TYPE === 'mahjonglm' ? new MahjongLMPlayer() : new QwenPlayer())
+                : new AI();
         }
 
         const rule = Majiang.rule();
         const origQipai = Majiang.Game.prototype.qipai;
         const game = new Majiang.Game(players, (paipu) => {
-            paipu.title = `Qwen四麻 seed=${seed}`;
+            paipu.title = `${PLAYER_NAME}四麻 seed=${seed}`;
             savePaipu(paipu, seed, 'yonma');
             printResult(paipu, qwenSeat, 'yonma');
+            yonmaPlayed++;
             startGame();
         }, rule);
         game.speed = 0;
-        game._model.player[qwenSeat] = 'Qwen';
+        { let pn = 2; for (let i = 0; i < 4; i++) game._model.player[i] = i === qwenSeat ? PLAYER_NAME : `P${pn++}`; }
+        game.view = new LiveView(game._model, 'yonma', qwenSeat);
 
         const origGameQipai = game.qipai.bind(game);
         game.qipai = function(shan) {
@@ -140,8 +303,15 @@ function startGame() {
 }
 
 startTime = Date.now();
-const hours = DURATION_MS / 3600000;
-console.log(`Qwen麻雀耐久対局: ${hours}時間, 三麻四麻交互, seed=0~`);
-console.log(`モデル: Qwen3.6-27B-UD-IQ2_XXS (llama.cpp)`);
+if (PLAYER_TYPE !== 'mahjonglm') {
+    llm.configure(LLM_PROVIDER, LLM_MODEL);
+}
+const prefix = PLAYER_TYPE === 'mahjonglm' ? 'MahjongLM' : 'LLM';
+if (USE_GAME_COUNT) {
+    console.log(`${prefix}麻雀対局: 四麻${YONMA_GAMES}半荘 + 三麻${SANMA_GAMES}半荘 = ${YONMA_GAMES + SANMA_GAMES}半荘, seed=0~`);
+} else {
+    const hours = DURATION_MS / 3600000;
+    console.log(`${prefix}麻雀耐久対局: ${hours}時間, 三麻四麻交互, seed=0~`);
+}
 console.log(`牌譜保存先: ${PAIPU_DIR}`);
 startGame();
