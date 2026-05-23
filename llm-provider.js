@@ -49,8 +49,8 @@ async function ensureOpencode() {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         ocProcess.on('exit', () => { ocProcess = null; ocReady = false; });
-        ocProcess.stderr.on('data', () => {});
-        ocProcess.stdout.on('data', () => {});
+        ocProcess.stderr.on('data', (d) => { if (process.env.DEBUG_LLM) process.stderr.write(`[opencode] ${d}`); });
+        ocProcess.stdout.on('data', (d) => { if (process.env.DEBUG_LLM) process.stdout.write(`[opencode] ${d}`); });
     }
     const start = Date.now();
     while (Date.now() - start < 20000) {
@@ -91,9 +91,9 @@ async function queryOpencode(prompt, modelId) {
 
 async function queryCopilot(prompt, modelId) {
     return new Promise((resolve, reject) => {
-        const args = ['-p', prompt, '--output-format', 'text'];
+        const args = ['-p', '-', '--output-format', 'text'];
         if (modelId) args.push('--model', modelId);
-        execFile('copilot', args, {
+        const proc = execFile('copilot', args, {
             timeout: 90000,
             cwd: '/tmp',
             env: { ...process.env, NO_COLOR: '1' },
@@ -104,6 +104,8 @@ async function queryCopilot(prompt, modelId) {
             if (!text) return reject(new Error('Empty copilot response'));
             resolve(text);
         });
+        proc.stdin.write(prompt);
+        proc.stdin.end();
     });
 }
 
@@ -114,6 +116,7 @@ async function queryGemini(prompt, modelId) {
     if (!apiKey) throw new Error('GEMINI_API_KEY environment variable not set');
 
     const model = modelId || 'gemini-2.0-flash';
+    if (!/^[\w.\-]+$/.test(model)) throw new Error(`Invalid model ID: ${model}`);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
     const controller = new AbortController();
@@ -153,10 +156,9 @@ async function queryGemini(prompt, modelId) {
 
 async function queryClaude(prompt, modelId) {
     return new Promise((resolve, reject) => {
-        const args = ['-p'];
+        const args = ['-p', '-'];
         if (modelId) args.push('--model', modelId);
-        args.push(prompt);
-        execFile('claude', args, {
+        const proc = execFile('claude', args, {
             timeout: 90000,
             cwd: '/tmp',
             env: { ...process.env, NO_COLOR: '1' },
@@ -167,6 +169,8 @@ async function queryClaude(prompt, modelId) {
             if (!text) return reject(new Error('Empty claude response'));
             resolve(text);
         });
+        proc.stdin.write(prompt);
+        proc.stdin.end();
     });
 }
 
@@ -176,8 +180,8 @@ async function queryCodex(prompt, modelId) {
     return new Promise((resolve, reject) => {
         const args = ['exec'];
         if (modelId) args.push('-m', modelId);
-        args.push(prompt);
-        execFile('codex', args, {
+        args.push('-');
+        const proc = execFile('codex', args, {
             timeout: 90000,
             cwd: '/tmp',
             env: { ...process.env, NO_COLOR: '1' },
@@ -188,6 +192,8 @@ async function queryCodex(prompt, modelId) {
             if (!text) return reject(new Error('Empty codex response'));
             resolve(text);
         });
+        proc.stdin.write(prompt);
+        proc.stdin.end();
     });
 }
 
@@ -198,7 +204,7 @@ const LOCAL_URL = process.env.LLAMA_URL || 'http://localhost:8080';
 async function queryLocal(prompt, modelId) {
     const body = JSON.stringify({
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 12,
+        max_tokens: 32,
         temperature: 0.3,
         repeat_penalty: 1.0,
         ...(modelId ? { model: modelId } : {}),

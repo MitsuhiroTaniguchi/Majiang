@@ -464,8 +464,10 @@ class SanmaGame extends Majiang.Game {
             else if (hule.fanshu >=  5) base = 4000;
             else if (hule.fanshu >=  4) base = 3000;
             else if (hule.fanshu >=  3) base = 2000;
-            else                        base = hule.fu * Math.pow(2, hule.fanshu + 2);
-            if (base > 2000) base = 2000;
+            else {
+                base = hule.fu * Math.pow(2, hule.fanshu + 2);
+                if (base > 2000) base = 2000;
+            }
 
             if (rongpai) {
                 let defen = Math.ceil(base * (menfeng == 0 ? 6 : 4) / 100) * 100;

@@ -27,8 +27,8 @@ const SYSTEM_MSG =
 
 回答は合法手リストから最善の1つを選び、その記号だけ答えてください。`;
 
-async function queryLLM(prompt) {
-    return _queryLLM(SYSTEM_MSG + '\n\n' + prompt);
+async function queryLLM(prompt, provider, modelId) {
+    return _queryLLM(SYSTEM_MSG + '\n\n' + prompt, provider, modelId);
 }
 
 function expandPai(compact) {
@@ -361,7 +361,7 @@ class SanmaQwenPlayer extends SanmaPlayer {
     }
 
     _asyncAction(prompt, legal, onResult) {
-        _queryLLM(SYSTEM_MSG + '\n\n' + prompt, this._provider, this._modelId).then(response => {
+        queryLLM(prompt, this._provider, this._modelId).then(response => {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {

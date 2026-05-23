@@ -5,7 +5,7 @@
 
 const { hide, show, scale } = Majiang.UI.Util;
 
-const LLAMA_URL = 'http://localhost:8080';
+const LLAMA_URL = (typeof window !== 'undefined' && window.LLAMA_URL) || 'http://localhost:8080';
 
 const WIND = ['東', '南', '西', '北'];
 
@@ -17,7 +17,7 @@ async function queryLLM(prompt) {
             { role: 'system', content: SYSTEM_MSG },
             { role: 'user', content: prompt },
         ],
-        max_tokens: 12,
+        max_tokens: 32,
         temperature: 0.3,
         repeat_penalty: 1.0,
     });
@@ -190,7 +190,7 @@ class QwenPlayer extends Majiang.Player {
             return this._callback({ hule: '-' });
         }
         const xiangting = Majiang.Util.xiangting(this.shoupai);
-        if (xiangting > 2) return this._callback();
+        if (xiangting > 4) return this._callback();
         const fulouInfo = buildFulouPrompt(this, dapai);
         if (!fulouInfo) return this._callback();
         this._asyncAction(fulouInfo.prompt, fulouInfo.legal, (chosen) => {

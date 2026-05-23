@@ -31,7 +31,6 @@ let sanmaPlayed = 0;
 let results = [];
 let startTime;
 let currentMode = '';
-let currentQwenSeat = 0;
 
 function parsePlayer(config, seatIdx) {
     if (!config) {
@@ -452,6 +451,6 @@ if (USE_GAME_COUNT) {
     console.log(`${prefix}麻雀耐久対局: ${hours}時間, 三麻四麻交互, seed=0~`);
 }
 console.log(`牌譜保存先: ${PAIPU_DIR}`);
-process.on('SIGINT', () => { llm.shutdown(); printSummary(); process.exit(0); });
-process.on('SIGTERM', () => { llm.shutdown(); printSummary(); process.exit(0); });
+process.on('SIGINT', () => { try { llm.shutdown(); } catch (_) {} printSummary(); process.exit(0); });
+process.on('SIGTERM', () => { try { llm.shutdown(); } catch (_) {} printSummary(); process.exit(0); });
 startGame();

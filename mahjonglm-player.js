@@ -168,7 +168,7 @@ class MahjongLMPlayer extends Majiang.Player {
         this._serverUrl = options.serverUrl || SERVER_URL;
         this._seq = [];
         this._viewerPlayer = 0;
-        this._seatCount = 4;
+        this._seatCount = options.seatCount || 4;
         this._pendingDora = null;
         this._qijia = 0;
         this._lastKanType = null;
@@ -178,7 +178,6 @@ class MahjongLMPlayer extends Majiang.Player {
     // ── lifecycle ───────────────────────────────────────────────────
 
     action_kaiju(kaiju) {
-        this._seatCount = 4;
         const qijia = kaiju.qijia != null ? kaiju.qijia : 0;
         this._qijia = qijia;
         this._viewerPlayer = (this._id - qijia + this._seatCount) % this._seatCount;
@@ -197,6 +196,13 @@ class MahjongLMPlayer extends Majiang.Player {
         this._pendingDora = null;
         this._lastKanType = null;
         this._pendingReaction = null;
+
+        const MAX_SEQ = 3500;
+        if (this._seq.length > MAX_SEQ) {
+            const keep = this._seq.slice(0, 5);
+            this._seq = keep;
+        }
+
         const m = this._model;
         const seat = this._menfeng;
 
@@ -399,7 +405,10 @@ class MahjongLMPlayer extends Majiang.Player {
             const kind = d.endsWith("_") ? "tsumogiri" : "tedashi";
             allowed.push(`discard_${seat}_${tile}_${kind}`);
         }
-        if (allowed.length === 0) allowed.push(`discard_${seat}_${normTile(lizhiCandidates[0] || this.shoupai._zimo)}_tsumogiri`);
+        if (allowed.length === 0) {
+            const fallbackTile = lizhiCandidates[0] || (this.shoupai.toString().split(",")[0].slice(-2));
+            allowed.push(`discard_${seat}_${normTile(fallbackTile)}_tsumogiri`);
+        }
 
         const [decision] = await generate(this._seq, allowed, 1, this._serverUrl);
         this._seq.push(decision.token);

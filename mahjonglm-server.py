@@ -204,12 +204,13 @@ class Handler(BaseHTTPRequestHandler):
                         logits = out[0, -1, :]
 
                         if allowed:
-                            mask = mx.full((VOCAB_SIZE,), float("-inf"))
+                            import numpy as np
+                            np_mask = np.full((VOCAB_SIZE,), float("-inf"), dtype=np.float32)
                             for tok in allowed:
                                 tid = vocab.get(tok)
                                 if tid is not None:
-                                    mask[tid] = 0.0
-                            logits = logits + mask
+                                    np_mask[tid] = 0.0
+                            logits = logits + mx.array(np_mask)
 
                         if temperature > 0:
                             logits = logits / temperature
@@ -271,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- helpers ----
     def _read_json(self):
-        length = int(self.headers.get("Content-Length", 0))
+        length = max(0, int(self.headers.get("Content-Length", 0)))
         if length > 1_048_576:
             return None
         try:
