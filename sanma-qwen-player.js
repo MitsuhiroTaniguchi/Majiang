@@ -220,6 +220,12 @@ function parseResponse(response, legal) {
 
 class SanmaQwenPlayer extends SanmaPlayer {
 
+    constructor(options = {}) {
+        super();
+        this._provider = options.provider;
+        this._modelId = options.modelId;
+    }
+
     action_kaiju(kaiju) { this._callback(); }
     action_qipai(qipai) { this._callback(); }
 
@@ -355,7 +361,7 @@ class SanmaQwenPlayer extends SanmaPlayer {
     }
 
     _asyncAction(prompt, legal, onResult) {
-        queryLLM(prompt).then(response => {
+        _queryLLM(SYSTEM_MSG + '\n\n' + prompt, this._provider, this._modelId).then(response => {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {

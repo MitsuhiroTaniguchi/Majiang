@@ -234,11 +234,14 @@ function configure(provider, modelId) {
     console.log(`LLM provider: ${provider}${modelId ? ' (' + modelId + ')' : ''}`);
 }
 
-async function queryLLM(prompt) {
-    const fn = PROVIDERS[currentProvider];
+async function queryLLM(prompt, provider, modelId) {
+    const prov = provider || currentProvider;
+    const model = modelId !== undefined ? modelId : currentModelId;
+    const fn = PROVIDERS[prov];
+    if (!fn) throw new Error(`Unknown provider: ${prov}`);
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            const result = await fn(prompt, currentModelId);
+            const result = await fn(prompt, model);
             queryCount++;
             if (queryCount % 50 === 0) console.log(`[LLM] ${queryCount} queries completed`);
             return result;

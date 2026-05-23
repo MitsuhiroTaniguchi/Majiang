@@ -33,6 +33,61 @@ let startTime;
 let currentMode = '';
 let currentQwenSeat = 0;
 
+function parsePlayer(config, seatIdx) {
+    if (!config) {
+        return { type: 'ai', name: `P${seatIdx + 1}` };
+    }
+    const cleanConfig = config.trim();
+    const lowerConfig = cleanConfig.toLowerCase();
+    
+    if (lowerConfig === 'ai') {
+        return { type: 'ai', name: `CPU-AI` };
+    }
+    if (lowerConfig.startsWith('mahjonglm')) {
+        let serverUrl = undefined;
+        if (cleanConfig.includes(':')) {
+            const parts = cleanConfig.split(':');
+            parts.shift(); // remove 'mahjonglm'
+            const rest = parts.join(':').trim();
+            if (rest.startsWith('http://') || rest.startsWith('https://')) {
+                serverUrl = rest;
+            } else if (/^\d+$/.test(rest)) {
+                serverUrl = `http://127.0.0.1:${rest}`;
+            } else {
+                serverUrl = rest;
+            }
+        }
+        let name = 'MahjongLM';
+        if (serverUrl) {
+            try {
+                const u = new URL(serverUrl);
+                name = `MahjongLM(${u.port || u.hostname})`;
+            } catch {
+                name = `MahjongLM(${serverUrl})`;
+            }
+        }
+        return { type: 'mahjonglm', name, serverUrl };
+    }
+    if (lowerConfig.startsWith('llm')) {
+        let provider = LLM_PROVIDER;
+        let modelId = LLM_MODEL;
+        if (cleanConfig.includes(':')) {
+            const part = cleanConfig.substring(cleanConfig.indexOf(':') + 1).trim();
+            if (part.includes('/')) {
+                const parts = part.split('/');
+                provider = parts[0].trim();
+                modelId = parts.slice(1).join('/').trim();
+            } else {
+                provider = part;
+                modelId = undefined;
+            }
+        }
+        const name = modelId ? `${provider}/${modelId}` : provider;
+        return { type: 'llm', name, provider, modelId };
+    }
+    return { type: 'ai', name: `P${seatIdx + 1}` };
+}
+
 class LiveView {
     constructor(model, mode, qwenSeat) {
         this._model = model;
@@ -44,9 +99,9 @@ class LiveView {
         const qs = this._qwenSeat;
         let player;
         if (this._mode === 'sanma') {
-            player = [PLAYER_NAME, m.player[(qs + 1) % 3], '', m.player[(qs + 2) % 3]];
+            player = [m.player[qs], m.player[(qs + 1) % 3], '', m.player[(qs + 2) % 3]];
         } else {
-            player = [PLAYER_NAME, m.player[(qs + 1) % 4], m.player[(qs + 2) % 4], m.player[(qs + 3) % 4]];
+            player = [m.player[qs], m.player[(qs + 1) % 4], m.player[(qs + 2) % 4], m.player[(qs + 3) % 4]];
         }
         broadcast('kaiju', {
             title: m.title,
@@ -168,54 +223,75 @@ function savePaipu(paipu, seed, mode) {
     console.log(`  牌譜: ${filepath}`);
 }
 
-function printResult(paipu, qwenSeat, mode) {
+function printResult(paipu, playerConfigs, mode) {
     const defen = paipu.defen;
     const rank = paipu.rank;
     const point = paipu.point;
     const nPlayers = mode === 'sanma' ? 3 : 4;
-    console.log(`\n===== 第${gameCount}半荘終了 (${mode}, seed=${gameCount - 1}, ${PLAYER_NAME}席${qwenSeat}) =====`);
+    
+    const specSeat = playerConfigs.findIndex(c => c.type !== 'ai');
+    const displaySeat = specSeat !== -1 ? specSeat : 0;
+    
+    console.log(`\n===== 第${gameCount}半荘終了 (${mode}, seed=${gameCount - 1}, 観戦対象席:${displaySeat}) =====`);
     for (let i = 0; i < nPlayers; i++) {
-        const tag = i === qwenSeat ? `[${PLAYER_NAME}]` : '[AI]  ';
-        console.log(`  ${tag} ${paipu.player[i]}: ${defen[i]}点 (${rank[i]}位, ${point[i] >= 0 ? '+' : ''}${point[i]})`);
+        const name = paipu.player[i];
+        const isAI = playerConfigs[i].type === 'ai';
+        const tag = isAI ? '[AI]  ' : `[${name}]`;
+        console.log(`  ${tag} ${name}: ${defen[i]}点 (${rank[i]}位, ${point[i] >= 0 ? '+' : ''}${point[i]})`);
     }
-    results.push({
-        mode,
-        qwen_seat: qwenSeat,
-        qwen_defen: defen[qwenSeat],
-        qwen_rank: rank[qwenSeat],
-        qwen_point: parseFloat(point[qwenSeat]),
-    });
+
+    for (let i = 0; i < nPlayers; i++) {
+        results.push({
+            mode,
+            name: paipu.player[i],
+            type: playerConfigs[i].type,
+            seat: i,
+            defen: defen[i],
+            rank: rank[i],
+            point: parseFloat(point[i]),
+        });
+    }
 }
 
 function printSummary() {
-    const n = results.length;
+    const totalMatches = yonmaPlayed + sanmaPlayed;
     console.log(`\n========================================`);
-    console.log(`  全${n}半荘の結果`);
+    console.log(`  全${totalMatches}半荘の結果`);
     console.log(`========================================`);
 
     for (const mode of ['yonma', 'sanma']) {
         const mr = results.filter(r => r.mode === mode);
         if (mr.length === 0) continue;
         const label = mode === 'sanma' ? '三麻' : '四麻';
-        const mn = mr.length;
-        const avgRank = mr.reduce((s, r) => s + r.qwen_rank, 0) / mn;
-        const totalPoint = mr.reduce((s, r) => s + r.qwen_point, 0);
-        const avgPoint = totalPoint / mn;
         const nPlayers = mode === 'sanma' ? 3 : 4;
-        const rankDist = new Array(nPlayers).fill(0);
-        for (const r of mr) rankDist[r.qwen_rank - 1]++;
+        const names = [...new Set(mr.map(r => r.name))];
 
-        console.log(`\n  [${label}] ${mn}半荘`);
-        console.log(`    平均順位: ${avgRank.toFixed(2)}`);
-        console.log(`    合計ポイント: ${totalPoint >= 0 ? '+' : ''}${totalPoint.toFixed(1)}`);
-        console.log(`    平均ポイント: ${avgPoint >= 0 ? '+' : ''}${avgPoint.toFixed(1)}`);
-        const rankStr = rankDist.map((c, i) => `${i + 1}位:${c}`).join(' ');
-        console.log(`    順位分布: ${rankStr}`);
+        console.log(`\n--- ${label} ---`);
+        for (const name of names) {
+            const pmr = mr.filter(r => r.name === name);
+            const mn = pmr.length;
+            if (mn === 0) continue;
+
+            const avgRank = pmr.reduce((s, r) => s + r.rank, 0) / mn;
+            const totalPoint = pmr.reduce((s, r) => s + r.point, 0);
+            const avgPoint = totalPoint / mn;
+            const rankDist = new Array(nPlayers).fill(0);
+            for (const r of pmr) rankDist[r.rank - 1]++;
+
+            console.log(`  * プレイヤー: ${name} (${mn}半荘)`);
+            console.log(`    平均順位: ${avgRank.toFixed(2)}`);
+            console.log(`    合計ポイント: ${totalPoint >= 0 ? '+' : ''}${totalPoint.toFixed(1)}`);
+            console.log(`    平均ポイント: ${avgPoint >= 0 ? '+' : ''}${avgPoint.toFixed(1)}`);
+            const rankStr = rankDist.map((c, i) => `${i + 1}位:${c}`).join(' ');
+            console.log(`    順位分布: ${rankStr}`);
+        }
     }
 
     const elapsed = ((Date.now() - startTime) / 1000 / 3600).toFixed(1);
-    console.log(`\n  所要時間: ${elapsed}時間 (${n}半荘)`);
-    console.log(`  1半荘あたり: ${((Date.now() - startTime) / 1000 / n).toFixed(0)}秒`);
+    console.log(`\n  所要時間: ${elapsed}時間 (${totalMatches}半荘)`);
+    if (totalMatches > 0) {
+        console.log(`  1半荘あたり: ${((Date.now() - startTime) / 1000 / totalMatches).toFixed(0)}秒`);
+    }
 }
 
 function startGame() {
@@ -240,53 +316,116 @@ function startGame() {
     } else {
         mode = gameCount % 2 === 1 ? 'yonma' : 'sanma';
     }
-    const seatRng = mulberry32(seed * 31 + 12345);
     const nPlayers = mode === 'sanma' ? 3 : 4;
-    const qwenSeat = seatRng() * nPlayers | 0;
-    const qijia = seatRng() * nPlayers | 0;
+    const qijia = mulberry32(seed * 31 + 12345)() * nPlayers | 0;
+
+    // Build seat configuration
+    const hasSeatConfig = (
+        process.env.SEAT0 !== undefined ||
+        process.env.SEAT1 !== undefined ||
+        process.env.SEAT2 !== undefined ||
+        (nPlayers === 4 && process.env.SEAT3 !== undefined)
+    );
+
+    let playerConfigs = [];
+    let qwenSeat = 0;
+
+    if (hasSeatConfig) {
+        for (let i = 0; i < nPlayers; i++) {
+            playerConfigs[i] = parsePlayer(process.env[`SEAT${i}`], i);
+        }
+        const specSeat = playerConfigs.findIndex(c => c.type !== 'ai');
+        qwenSeat = specSeat !== -1 ? specSeat : 0;
+    } else {
+        const seatRng = mulberry32(seed * 31 + 12345);
+        qwenSeat = seatRng() * nPlayers | 0;
+        for (let i = 0; i < nPlayers; i++) {
+            if (i === qwenSeat) {
+                playerConfigs[i] = {
+                    type: PLAYER_TYPE,
+                    name: PLAYER_NAME,
+                    provider: LLM_PROVIDER,
+                    modelId: LLM_MODEL,
+                    serverUrl: undefined
+                };
+            } else {
+                playerConfigs[i] = { type: 'ai', name: `P${i + 1}` };
+            }
+        }
+    }
+
+    const specPlayerName = playerConfigs[qwenSeat].name;
 
     if (mode === 'sanma') {
-        console.log(`\n>>>>> 第${gameCount}半荘開始 (三麻, seed=${seed}, ${PLAYER_NAME}席${qwenSeat}) <<<<<`);
+        console.log(`\n>>>>> 第${gameCount}半荘開始 (三麻, seed=${seed}, 観戦席:${specPlayerName}席${qwenSeat}) <<<<<`);
 
         const players = [];
         for (let i = 0; i < 3; i++) {
-            players[i] = (i === qwenSeat)
-                ? (PLAYER_TYPE === 'mahjonglm' ? new SanmaMahjongLMPlayer() : new SanmaQwenPlayer())
-                : new SimpleAI();
+            const cfg = playerConfigs[i];
+            if (cfg.type === 'mahjonglm') {
+                players[i] = new SanmaMahjongLMPlayer({ serverUrl: cfg.serverUrl });
+            } else if (cfg.type === 'llm') {
+                players[i] = new SanmaQwenPlayer({ provider: cfg.provider, modelId: cfg.modelId });
+            } else {
+                players[i] = new SimpleAI();
+            }
         }
 
         const game = new SanmaGame(players, (paipu) => {
-            paipu.title = `${PLAYER_NAME}三麻 seed=${seed}`;
+            paipu.title = `${specPlayerName}三麻 seed=${seed}`;
             savePaipu(paipu, seed, 'sanma');
-            printResult(paipu, qwenSeat, 'sanma');
+            printResult(paipu, playerConfigs, 'sanma');
             sanmaPlayed++;
             startGame();
         }, null, null, seed);
         game.speed = 0;
-        { let pn = 2; for (let i = 0; i < 3; i++) game._model.player[i] = i === qwenSeat ? PLAYER_NAME : `P${pn++}`; }
+        
+        let pn = 1;
+        for (let i = 0; i < 3; i++) {
+            if (playerConfigs[i].type === 'ai') {
+                game._model.player[i] = `P${pn++}`;
+            } else {
+                game._model.player[i] = playerConfigs[i].name;
+            }
+        }
+        
         game.view = new LiveView(game._model, 'sanma', qwenSeat);
         game.kaiju(qijia);
     } else {
-        console.log(`\n>>>>> 第${gameCount}半荘開始 (四麻, seed=${seed}, ${PLAYER_NAME}席${qwenSeat}) <<<<<`);
+        console.log(`\n>>>>> 第${gameCount}半荘開始 (四麻, seed=${seed}, 観戦席:${specPlayerName}席${qwenSeat}) <<<<<`);
 
         const players = [];
         for (let i = 0; i < 4; i++) {
-            players[i] = (i === qwenSeat)
-                ? (PLAYER_TYPE === 'mahjonglm' ? new MahjongLMPlayer() : new QwenPlayer())
-                : new AI();
+            const cfg = playerConfigs[i];
+            if (cfg.type === 'mahjonglm') {
+                players[i] = new MahjongLMPlayer({ serverUrl: cfg.serverUrl });
+            } else if (cfg.type === 'llm') {
+                players[i] = new QwenPlayer({ provider: cfg.provider, modelId: cfg.modelId });
+            } else {
+                players[i] = new AI();
+            }
         }
 
         const rule = Majiang.rule();
         const origQipai = Majiang.Game.prototype.qipai;
         const game = new Majiang.Game(players, (paipu) => {
-            paipu.title = `${PLAYER_NAME}四麻 seed=${seed}`;
+            paipu.title = `${specPlayerName}四麻 seed=${seed}`;
             savePaipu(paipu, seed, 'yonma');
-            printResult(paipu, qwenSeat, 'yonma');
+            printResult(paipu, playerConfigs, 'yonma');
             yonmaPlayed++;
             startGame();
         }, rule);
         game.speed = 0;
-        { let pn = 2; for (let i = 0; i < 4; i++) game._model.player[i] = i === qwenSeat ? PLAYER_NAME : `P${pn++}`; }
+        
+        let pn = 1;
+        for (let i = 0; i < 4; i++) {
+            if (playerConfigs[i].type === 'ai') {
+                game._model.player[i] = `P${pn++}`;
+            } else {
+                game._model.player[i] = playerConfigs[i].name;
+            }
+        }
+        
         game.view = new LiveView(game._model, 'yonma', qwenSeat);
 
         const origGameQipai = game.qipai.bind(game);

@@ -207,8 +207,10 @@ function parseResponse(response, legal) {
 
 class QwenPlayer extends Majiang.Player {
 
-    constructor() {
+    constructor(options = {}) {
         super();
+        this._provider = options.provider;
+        this._modelId = options.modelId;
     }
 
     action_kaiju(kaiju) { this._callback(); }
@@ -324,7 +326,7 @@ class QwenPlayer extends Majiang.Player {
     action_jieju(jieju) { this._callback(); }
 
     _asyncAction(prompt, legal, onResult) {
-        queryLLM(prompt).then(response => {
+        _queryLLM(SYSTEM_MSG + '\n\n' + prompt, this._provider, this._modelId).then(response => {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {

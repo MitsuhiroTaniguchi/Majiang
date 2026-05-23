@@ -60,10 +60,10 @@ function encodeTenbo(value) {
 }
 
 // ── HTTP helper ─────────────────────────────────────────────────────
-function postJSON(path, body) {
+function postJSON(path, body, serverUrl) {
     return new Promise((resolve, reject) => {
         const data = JSON.stringify(body);
-        const u = new URL(path, SERVER_URL);
+        const u = new URL(path, serverUrl || SERVER_URL);
         const req = http.request(
             { hostname: u.hostname, port: u.port, path: u.pathname,
               method: "POST", headers: {
@@ -86,10 +86,10 @@ function postJSON(path, body) {
     });
 }
 
-async function generate(tokens, allowed, n) {
+async function generate(tokens, allowed, n, serverUrl) {
     const body = { tokens, n: n || 1 };
     if (allowed) body.allowed = allowed;
-    const res = await postJSON("/generate", body);
+    const res = await postJSON("/generate", body, serverUrl);
     if (res.error) throw new Error(`server: ${res.error}`);
     if (process.env.DEBUG_GEN) {
         for (const g of res.generated) {
@@ -165,8 +165,9 @@ function parseTilesFromHand(shoupaiStr) {
 
 // ── Player ──────────────────────────────────────────────────────────
 class MahjongLMPlayer extends Majiang.Player {
-    constructor() {
+    constructor(options = {}) {
         super();
+        this._serverUrl = options.serverUrl || SERVER_URL;
         this._seq = [];
         this._viewerPlayer = 0;
         this._seatCount = 4;
@@ -321,7 +322,7 @@ class MahjongLMPlayer extends Majiang.Player {
                     `take_self_${seat}_${opt}`,
                     `pass_self_${seat}_${opt}`,
                 ];
-                const [decision] = await generate(this._seq, allowed, 1);
+                const [decision] = await generate(this._seq, allowed, 1, this._serverUrl);
                 this._seq.push(decision.token);
 
                 if (decision.token === `take_self_${seat}_${opt}`) {
@@ -402,7 +403,7 @@ class MahjongLMPlayer extends Majiang.Player {
         }
         if (allowed.length === 0) allowed.push(`discard_${seat}_${normTile(lizhiCandidates[0] || this.shoupai._zimo)}_tsumogiri`);
 
-        const [decision] = await generate(this._seq, allowed, 1);
+        const [decision] = await generate(this._seq, allowed, 1, this._serverUrl);
         this._seq.push(decision.token);
         this._emitDeferredDora();
         const chosen = this._discardTokenToAction(decision.token, true);
@@ -425,7 +426,7 @@ class MahjongLMPlayer extends Majiang.Player {
             this._seq.push(candidates[0]);
             return candidates[0];
         }
-        const [decision] = await generate(this._seq, candidates, 1);
+        const [decision] = await generate(this._seq, candidates, 1, this._serverUrl);
         this._seq.push(decision.token);
         return decision.token;
     }
@@ -466,7 +467,7 @@ class MahjongLMPlayer extends Majiang.Player {
             const kind = d.endsWith("_") ? "tsumogiri" : "tedashi";
             allowed.push(`discard_${seat}_${tile}_${kind}`);
         }
-        const [decision] = await generate(this._seq, allowed, 1);
+        const [decision] = await generate(this._seq, allowed, 1, this._serverUrl);
         this._seq.push(decision.token);
         this._emitDeferredDora();
         const chosen = this._discardTokenToAction(decision.token, false);
@@ -563,7 +564,7 @@ class MahjongLMPlayer extends Majiang.Player {
                     `take_react_${mySeat}_${opt}`,
                     `pass_react_${mySeat}_${opt}_voluntary`,
                 ];
-                const [decision] = await generate(this._seq, allowed, 1);
+                const [decision] = await generate(this._seq, allowed, 1, this._serverUrl);
                 this._seq.push(decision.token);
 
                 if (decision.token === `take_react_${mySeat}_${opt}`) {
@@ -624,7 +625,7 @@ class MahjongLMPlayer extends Majiang.Player {
             return melds[0];
         }
         const allowed = ["red_used", "red_not_used"];
-        const [decision] = await generate(this._seq, allowed, 1);
+        const [decision] = await generate(this._seq, allowed, 1, this._serverUrl);
         this._seq.push(decision.token);
         const useRed = decision.token === "red_used";
         for (const m of melds) {
@@ -654,7 +655,7 @@ class MahjongLMPlayer extends Majiang.Player {
         }
 
         if (posAllowed.length === 0) return melds[0];
-        const [posDec] = await generate(this._seq, posAllowed, 1);
+        const [posDec] = await generate(this._seq, posAllowed, 1, this._serverUrl);
         this._seq.push(posDec.token);
         const chosenPos = posDec.token.replace("chi_pos_", "");
         const candidates = posMap[chosenPos] || melds;
@@ -666,7 +667,7 @@ class MahjongLMPlayer extends Majiang.Player {
         }
 
         const redAllowed = ["red_used", "red_not_used"];
-        const [redDec] = await generate(this._seq, redAllowed, 1);
+        const [redDec] = await generate(this._seq, redAllowed, 1, this._serverUrl);
         this._seq.push(redDec.token);
         const useRed = redDec.token === "red_used";
         for (const m of candidates) {
