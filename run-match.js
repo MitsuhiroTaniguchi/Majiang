@@ -337,7 +337,7 @@ function startGame() {
         const specSeat = playerConfigs.findIndex(c => c.type !== 'ai');
         qwenSeat = specSeat !== -1 ? specSeat : 0;
     } else {
-        const seatRng = mulberry32(seed * 31 + 12345);
+        const seatRng = mulberry32(seed * 31 + 67890);
         qwenSeat = seatRng() * nPlayers | 0;
         for (let i = 0; i < nPlayers; i++) {
             if (i === qwenSeat) {
@@ -376,7 +376,7 @@ function startGame() {
             savePaipu(paipu, seed, 'sanma');
             printResult(paipu, playerConfigs, 'sanma');
             sanmaPlayed++;
-            startGame();
+            setImmediate(startGame);
         }, null, null, seed);
         game.speed = 0;
         
@@ -413,7 +413,7 @@ function startGame() {
             savePaipu(paipu, seed, 'yonma');
             printResult(paipu, playerConfigs, 'yonma');
             yonmaPlayed++;
-            startGame();
+            setImmediate(startGame);
         }, rule);
         game.speed = 0;
         
@@ -428,7 +428,6 @@ function startGame() {
         
         game.view = new LiveView(game._model, 'yonma', qwenSeat);
 
-        const origGameQipai = game.qipai.bind(game);
         game.qipai = function(shan) {
             if (!shan) {
                 const model = this._model;
@@ -453,4 +452,6 @@ if (USE_GAME_COUNT) {
     console.log(`${prefix}麻雀耐久対局: ${hours}時間, 三麻四麻交互, seed=0~`);
 }
 console.log(`牌譜保存先: ${PAIPU_DIR}`);
+process.on('SIGINT', () => { llm.shutdown(); printSummary(); process.exit(0); });
+process.on('SIGTERM', () => { llm.shutdown(); printSummary(); process.exit(0); });
 startGame();

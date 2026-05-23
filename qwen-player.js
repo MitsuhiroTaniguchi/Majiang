@@ -280,7 +280,7 @@ class QwenPlayer extends Majiang.Player {
         }
 
         const xiangting = Majiang.Util.xiangting(this.shoupai);
-        if (xiangting > 2) return this._callback();
+        if (xiangting > 4) return this._callback();
 
         const fulouInfo = buildFulouPrompt(this, dapai);
         if (!fulouInfo) return this._callback();
@@ -330,8 +330,8 @@ class QwenPlayer extends Majiang.Player {
             const chosen = parseResponse(response, legal);
             onResult(chosen);
         }).catch(err => {
-            console.error(`  [LLM] fatal: ${err.message}`);
-            process.exit(1);
+            console.error(`  [LLM] error: ${err.message}, falling back to first legal move`);
+            onResult(legal[0]);
         });
     }
 }

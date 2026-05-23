@@ -12,6 +12,7 @@ const sseClients = new Set();
 let lastKaiju = null;
 let lastQipai = null;
 let eventLog = [];
+const MAX_EVENT_LOG = 200;
 
 const MIME = {
     '.html': 'text/html; charset=utf-8',
@@ -25,10 +26,10 @@ const MIME = {
 };
 
 function serveStatic(req, res) {
-    let urlPath = req.url.split('?')[0];
+    let urlPath = decodeURIComponent(req.url.split('?')[0]);
     if (urlPath === '/') urlPath = '/live.html';
-    const filePath = path.join(DIST_DIR, urlPath);
-    if (!filePath.startsWith(DIST_DIR)) {
+    const filePath = path.resolve(DIST_DIR, '.' + urlPath);
+    if (!filePath.startsWith(DIST_DIR + path.sep) && filePath !== DIST_DIR) {
         res.writeHead(403); res.end(); return;
     }
     fs.readFile(filePath, (err, data) => {
@@ -52,10 +53,11 @@ function servePaipuList(req, res) {
 }
 
 function servePaipuFile(req, res, filename) {
-    if (filename.includes('..') || filename.includes('/')) {
+    const decoded = decodeURIComponent(filename);
+    const filePath = path.resolve(PAIPU_DIR, decoded);
+    if (!filePath.startsWith(PAIPU_DIR + path.sep) && filePath !== PAIPU_DIR) {
         res.writeHead(403); res.end(); return;
     }
-    const filePath = path.join(PAIPU_DIR, filename);
     fs.readFile(filePath, (err, data) => {
         if (err) { res.writeHead(404); res.end('Not found'); return; }
         res.writeHead(200, {
@@ -94,9 +96,22 @@ const server = http.createServer((req, res) => {
     serveStatic(req, res);
 });
 
-server.listen(PORT, () => {
-    console.log(`Live viewer: http://localhost:${PORT}/`);
-});
+let serverStarted = false;
+function startServer() {
+    if (serverStarted) return;
+    serverStarted = true;
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`Live viewer port ${PORT} already in use, skipping`);
+        } else {
+            console.error(`Live server error: ${err.message}`);
+        }
+    });
+    server.listen(PORT, () => {
+        console.log(`Live viewer: http://localhost:${PORT}/`);
+    });
+}
+startServer();
 
 function broadcast(event, data) {
     if (event === 'kaiju') {
@@ -108,6 +123,7 @@ function broadcast(event, data) {
         eventLog = [];
     } else {
         eventLog.push({ event, data });
+        if (eventLog.length > MAX_EVENT_LOG) eventLog.shift();
     }
     const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of sseClients) {

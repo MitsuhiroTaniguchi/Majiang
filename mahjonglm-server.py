@@ -14,7 +14,9 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+import gc
 import json
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from transformers import PreTrainedTokenizerFast
 
@@ -36,7 +38,13 @@ except ImportError:
 
 MODEL_ID = os.environ.get("MAHJONGLM_MODEL", "mitsutani/mahjonglm-10m")
 TOKENIZER_ID = os.environ.get("MAHJONGLM_TOKENIZER", "")
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8889
+try:
+    PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8889
+    if not (1 <= PORT <= 65535):
+        raise ValueError
+except (ValueError, IndexError):
+    print(f"Usage: {sys.argv[0]} [port] (1-65535, default 8889)")
+    sys.exit(1)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -142,6 +150,9 @@ vocab = tokenizer.get_vocab()
 id_to_token = {v: k for k, v in vocab.items()}
 VOCAB_SIZE = len(vocab)
 
+_request_count = 0
+_inference_lock = threading.Lock()
+
 
 class Handler(BaseHTTPRequestHandler):
 
@@ -158,10 +169,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/generate":
             body = self._read_json()
-            tokens = body["tokens"]
-            allowed = body.get("allowed")
+            if body is None:
+                self._json({"error": "invalid request body"}, 400)
+                return
+            tokens = body.get("tokens")
+            if not isinstance(tokens, list) or len(tokens) == 0 or len(tokens) > 4096:
+                self._json({"error": "tokens must be a non-empty list (max 4096)"}, 400)
+                return
             n = body.get("n", 1)
+            if not isinstance(n, int) or n < 1 or n > 50:
+                self._json({"error": "n must be 1-50"}, 400)
+                return
             temperature = body.get("temperature", 0.8)
+            if not isinstance(temperature, (int, float)) or temperature < 0:
+                temperature = 0.8
+            allowed = body.get("allowed")
 
             ids = []
             for t in tokens:
@@ -171,79 +193,91 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 ids.append(tid)
 
-            if backend == "mlx":
-                input_ids = mx.array([ids], dtype=mx.int32)
-                caches = [KVCache() for _ in range(len(model.layers))]
-                generated = []
+            with _inference_lock:
+                if backend == "mlx":
+                    input_ids = mx.array([ids], dtype=mx.int32)
+                    caches = [KVCache() for _ in range(len(model.layers))]
+                    generated = []
 
-                for step in range(n):
-                    out = model(input_ids, cache=caches)
-                    logits = out[0, -1, :]
-
-                    if allowed:
-                        mask = mx.full((VOCAB_SIZE,), float("-inf"))
-                        for tok in allowed:
-                            tid = vocab.get(tok)
-                            if tid is not None:
-                                mask[tid] = 0.0
-                        logits = logits + mask
-
-                    if temperature > 0 and temperature != 1.0:
-                        logits = logits / temperature
-
-                    probs = mx.softmax(logits, axis=-1)
-                    token_id = int(mx.argmax(logits).item())
-                    token_str = id_to_token.get(token_id, "<unk>")
-
-                    generated.append({"token": token_str, "prob": round(float(probs[token_id].item()), 4)})
-                    input_ids = mx.array([[token_id]], dtype=mx.int32)
-
-                self._json({"generated": generated})
-                
-                # Reclaim intermediate MLX buffers and memory
-                mx.metal.clear_cache()
-                import gc
-                gc.collect()
-                return
-            else:
-                import torch
-                input_ids = torch.tensor([ids], dtype=torch.long, device=device)
-                generated = []
-
-                with torch.no_grad():
-                    past = None
                     for step in range(n):
-                        out = model(input_ids, past_key_values=past, use_cache=True)
-                        logits = out.logits[0, -1, :].float()
-                        past = out.past_key_values
+                        out = model(input_ids, cache=caches)
+                        logits = out[0, -1, :]
 
                         if allowed:
-                            mask = torch.full((VOCAB_SIZE,), float("-inf"), device=device)
+                            mask = mx.full((VOCAB_SIZE,), float("-inf"))
                             for tok in allowed:
                                 tid = vocab.get(tok)
                                 if tid is not None:
                                     mask[tid] = 0.0
                             logits = logits + mask
 
-                        if temperature > 0 and temperature != 1.0:
+                        if temperature > 0:
                             logits = logits / temperature
-
-                        probs = torch.softmax(logits, dim=-1)
-                        token_id = int(torch.argmax(logits).item())
+                            probs = mx.softmax(logits, axis=-1)
+                            token_id = int(mx.random.categorical(logits).item())
+                        else:
+                            probs = mx.softmax(logits, axis=-1)
+                            token_id = int(mx.argmax(logits).item())
                         token_str = id_to_token.get(token_id, "<unk>")
 
-                        generated.append({"token": token_str, "prob": round(float(probs[token_id]), 4)})
-                        input_ids = torch.tensor([[token_id]], dtype=torch.long, device=device)
+                        generated.append({"token": token_str, "prob": round(float(probs[token_id].item()), 4)})
+                        input_ids = mx.array([[token_id]], dtype=mx.int32)
 
-                self._json({"generated": generated})
-                return
+                    self._json({"generated": generated})
+
+                    # Reclaim intermediate MLX buffers and memory
+                    mx.metal.clear_cache()
+                    global _request_count
+                    _request_count += 1
+                    if _request_count % 100 == 0:
+                        gc.collect()
+                    return
+                else:
+                    import torch
+                    input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+                    generated = []
+
+                    with torch.no_grad():
+                        past = None
+                        for step in range(n):
+                            out = model(input_ids, past_key_values=past, use_cache=True)
+                            logits = out.logits[0, -1, :].float()
+                            past = out.past_key_values
+
+                            if allowed:
+                                mask = torch.full((VOCAB_SIZE,), float("-inf"), device=device)
+                                for tok in allowed:
+                                    tid = vocab.get(tok)
+                                    if tid is not None:
+                                        mask[tid] = 0.0
+                                logits = logits + mask
+
+                            if temperature > 0:
+                                logits = logits / temperature
+                                probs = torch.softmax(logits, dim=-1)
+                                token_id = int(torch.multinomial(probs, 1).item())
+                            else:
+                                probs = torch.softmax(logits, dim=-1)
+                                token_id = int(torch.argmax(logits).item())
+                            token_str = id_to_token.get(token_id, "<unk>")
+
+                            generated.append({"token": token_str, "prob": round(float(probs[token_id]), 4)})
+                            input_ids = torch.tensor([[token_id]], dtype=torch.long, device=device)
+
+                    self._json({"generated": generated})
+                    return
 
         self._json({"error": "not found"}, 404)
 
     # ---- helpers ----
     def _read_json(self):
         length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length))
+        if length > 1_048_576:
+            return None
+        try:
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     def _json(self, data, code=200):
         payload = json.dumps(data).encode()
@@ -259,5 +293,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    from http.server import ThreadingHTTPServer
     print(f"Listening on http://127.0.0.1:{PORT}")
-    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

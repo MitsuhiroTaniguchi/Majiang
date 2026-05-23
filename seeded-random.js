@@ -31,9 +31,10 @@ function buildPaiList(rule) {
 }
 
 function seededShuffle(pai, rng) {
+    const arr = pai.slice();
     const shuffled = [];
-    while (pai.length) {
-        shuffled.push(pai.splice(rng() * pai.length | 0, 1)[0]);
+    while (arr.length) {
+        shuffled.push(arr.splice(rng() * arr.length | 0, 1)[0]);
     }
     return shuffled;
 }

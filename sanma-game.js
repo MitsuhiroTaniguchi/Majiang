@@ -9,7 +9,10 @@ const DIR_OFFSET  = '_-+';   // suffix→offset: _→0, -→1(上家called), +�
 
 function sanmaBaopai(indicators) {
     return indicators.map(p => {
-        if (p && p[0] === 'm' && (+p[1] || 5) === 1) return 'm8';
+        if (p && p[0] === 'm') {
+            if (p[1] === '1') return 'm9';
+            if (p[1] === '9') return 'm1';
+        }
         return p;
     });
 }
@@ -389,7 +392,7 @@ class SanmaGame extends Majiang.Game {
 
         let model = this._model;
         model.shan.kaigang();
-        let baopai = model.shan.baopai.pop();
+        let baopai = model.shan.baopai[model.shan.baopai.length - 1];
 
         let paipu = { kaigang: { baopai: baopai } };
         this.add_paipu(paipu);
@@ -462,34 +465,34 @@ class SanmaGame extends Majiang.Game {
             else if (hule.fanshu >=  4) base = 3000;
             else if (hule.fanshu >=  3) base = 2000;
             else                        base = hule.fu * Math.pow(2, hule.fanshu + 2);
-            if (base > 2000) base = Math.min(base, base);
+            if (base > 2000) base = 2000;
 
             if (rongpai) {
                 let defen = Math.ceil(base * (menfeng == 0 ? 6 : 4) / 100) * 100;
-                let fenpei = [0, 0, 0, 0];
+                let fenpei = [0, 0, 0];
                 fenpei[menfeng] = defen + model.changbang * 300 + model.lizhibang * 1000;
                 fenpei[model.lunban] = -defen - model.changbang * 300;
                 hule.defen = defen;
                 hule.fenpei = fenpei;
             } else {
-                let defen, fenpei = [0, 0, 0, 0];
+                let defen, fenpei = [0, 0, 0];
                 if (menfeng == 0) {
                     let each = Math.ceil(base * 2 / 100) * 100;
-                    defen = each * 2;
-                    for (let i = 0; i < 4; i++) {
-                        fenpei[i] = i == menfeng ? 0 : -each;
+                    defen = each * (N - 1);
+                    for (let i = 0; i < N; i++) {
+                        if (i != menfeng) fenpei[i] = -each;
                     }
                 } else {
                     let oya = Math.ceil(base * 2 / 100) * 100;
                     let ko  = Math.ceil(base * 1 / 100) * 100;
                     defen = oya + ko;
-                    for (let i = 0; i < 4; i++) {
+                    for (let i = 0; i < N; i++) {
                         if (i == menfeng) continue;
                         fenpei[i] = (i == 0) ? -oya : -ko;
                     }
                 }
                 fenpei[menfeng] = defen + model.changbang * 300 + model.lizhibang * 1000;
-                for (let i = 0; i < 4; i++) {
+                for (let i = 0; i < N; i++) {
                     if (i != menfeng) fenpei[i] -= model.changbang * 100;
                 }
                 hule.defen = defen;
@@ -500,12 +503,16 @@ class SanmaGame extends Majiang.Game {
         if (this._rule['連荘方式'] > 0 && menfeng == 0) this._lianzhuang = true;
         if (this._rule['場数'] == 0) this._lianzhuang = false;
 
-        let fenpei4 = hule.fenpei;
-        let fenpei  = [fenpei4[0], fenpei4[1], fenpei4[2]];
-        if (!rongpai && fenpei4[3] !== 0) {
-            fenpei[menfeng] += fenpei4[3];
+        if (hule.fenpei.length > N) {
+            let fenpei4 = hule.fenpei;
+            let fenpei  = [fenpei4[0], fenpei4[1], fenpei4[2]];
+            if (!rongpai && fenpei4[3] !== 0) {
+                fenpei[menfeng] += fenpei4[3];
+            }
+            this._fenpei = fenpei;
+        } else {
+            this._fenpei = hule.fenpei;
         }
-        this._fenpei = fenpei;
 
         let paipu = {
             hule: {
@@ -519,7 +526,7 @@ class SanmaGame extends Majiang.Game {
                 damanguan:  hule.damanguan,
                 defen:      hule.defen,
                 hupai:      hule.hupai,
-                fenpei:     fenpei,
+                fenpei:     this._fenpei,
                 n_kita:     n_kita
             }
         };

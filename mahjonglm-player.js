@@ -27,14 +27,8 @@ function doraTile(pai) {
 }
 
 function handToTiles(shoupaiStr) {
-    const tiles = [];
     const concealed = shoupaiStr.split(",")[0];
-    let suit = "";
-    for (const ch of concealed) {
-        if ("mpsz".includes(ch)) { suit = ch; }
-        else if (ch >= "0" && ch <= "9") { tiles.push(suit + ch); }
-    }
-    return tiles.sort((a, b) => tileSortKey(a) - tileSortKey(b));
+    return handToTilesUnsorted(concealed).sort((a, b) => tileSortKey(a) - tileSortKey(b));
 }
 
 // ── TENBO encoding ──────────────────────────────────────────────────
@@ -153,10 +147,14 @@ const PINGJU_TOKEN = {
 };
 
 function parseTilesFromHand(shoupaiStr) {
-    const tiles = [];
     const concealed = shoupaiStr.split(",")[0].replace(/[_*]/g, "");
+    return handToTilesUnsorted(concealed);
+}
+
+function handToTilesUnsorted(str) {
+    const tiles = [];
     let suit = "";
-    for (const ch of concealed) {
+    for (const ch of str) {
         if ("mpsz".includes(ch)) { suit = ch; }
         else if (ch >= "0" && ch <= "9") { tiles.push(suit + ch); }
     }

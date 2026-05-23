@@ -114,14 +114,14 @@ async function queryGemini(prompt, modelId) {
     if (!apiKey) throw new Error('GEMINI_API_KEY environment variable not set');
 
     const model = modelId || 'gemini-2.0-flash';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);
     try {
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
             signal: controller.signal,
             body: JSON.stringify({
                 contents: [{ parts: [{ text: prompt }] }],
@@ -203,13 +203,26 @@ async function queryLocal(prompt, modelId) {
         repeat_penalty: 1.0,
         ...(modelId ? { model: modelId } : {}),
     });
-    const res = await fetch(`${LOCAL_URL}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-    });
-    const data = await res.json();
-    return (data.choices?.[0]?.message?.content || '').trim();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
+    try {
+        const res = await fetch(`${LOCAL_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body,
+        });
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+            const err = await res.text().catch(() => '');
+            throw new Error(`Local API ${res.status}: ${err.slice(0, 200)}`);
+        }
+        const data = await res.json();
+        return (data.choices?.[0]?.message?.content || '').trim();
+    } catch (e) {
+        clearTimeout(timeoutId);
+        throw e;
+    }
 }
 
 // --- dispatcher with retry ---
@@ -260,5 +273,7 @@ async function queryLLM(prompt, provider, modelId) {
 function shutdown() {
     if (ocProcess) { ocProcess.kill(); ocProcess = null; }
 }
+
+process.on('exit', shutdown);
 
 module.exports = { queryLLM, configure, shutdown };
